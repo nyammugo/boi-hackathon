@@ -322,7 +322,7 @@ function Chat({
     if (!text.trim() || busy) return;
     clearError();
     nearBottom.current = true;
-    setInput("");
+    if (!sourceId) setInput("");
     void sendMessage({
       text: text.trim(),
       ...(sourceId ? { metadata: { simplifyMessageId: sourceId } } : {}),

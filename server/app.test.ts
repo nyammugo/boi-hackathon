@@ -7,6 +7,8 @@ import type { UIMessage } from "ai";
 
 // Set before importing the app: integration tests never call the AI provider.
 process.env.DEMO_MODE = "true";
+process.env.ELEVENLABS_API_KEY = "";
+process.env.ELEVENLABS_AGENT_ID = "";
 const { app } = await import("./app");
 const { migrate, pool, loadConversation, saveConversation } = await import(
   "./db"
@@ -143,4 +145,67 @@ test("rejects concurrent writes to the same chat", async () => {
   assert.equal(second.status, 409);
   await first.text();
   assert.equal((await loadConversation(id))?.length, 2);
+});
+
+test("voice transcripts persist alongside typed history and corrections survive reload", async () => {
+  const id = testId();
+  const original = question("Typed question");
+  await saveConversation(id, [original]);
+  const spoken: UIMessage = {
+    id: "voice-test-agent-1",
+    role: "assistant",
+    parts: [{ type: "text", text: "A spoken answer" }],
+  };
+  const save = (messages: UIMessage[]) =>
+    fetch(`${base}/api/conversations/${id}/voice`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+  assert.equal((await save([original, spoken])).status, 200);
+  spoken.parts = [{ type: "text", text: "A spoken" }];
+  assert.equal((await save([original, spoken])).status, 200);
+  const response = await fetch(`${base}/api/conversations/${id}`);
+  assert.deepEqual(
+    ((await response.json()) as { messages: UIMessage[] }).messages,
+    [original, spoken],
+  );
+  assert.equal(
+    (await save([{ ...spoken, role: "system" as "assistant" }])).status,
+    400,
+  );
+  assert.deepEqual(await loadConversation(id), [original, spoken]);
+});
+
+test("voice transcript writes respect chat locks and validate missing bodies", async () => {
+  const id = testId();
+  assert.equal(
+    (await fetch(`${base}/api/conversations/${id}/voice`, { method: "PUT" }))
+      .status,
+    400,
+  );
+  const first = await post({ id, messages: [question()] });
+  const second = await fetch(`${base}/api/conversations/${id}/voice`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: [question("Voice question")] }),
+  });
+  assert.equal(second.status, 409);
+  await first.text();
+});
+
+test("unconfigured voice reports unavailable without returning secrets", async () => {
+  const status = await fetch(`${base}/api/voice/status`);
+  assert.equal(
+    ((await status.json()) as { available: boolean }).available,
+    false,
+  );
+  const session = await fetch(`${base}/api/voice/session`, { method: "POST" });
+  assert.equal(session.status, 503);
+  assert.equal(session.headers.get("cache-control"), "no-store");
+  assert.ok(
+    ((await session.json()) as { error: string }).error.includes(
+      "not configured",
+    ),
+  );
 });

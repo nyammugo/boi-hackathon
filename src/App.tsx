@@ -18,6 +18,9 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { api } from "./api";
+import { CallControls } from "./CallControls";
+import { useVoiceCall } from "./useVoiceCall";
+import { applyVoiceMessage } from "./voice";
 
 type Conversation = { id: string; title: string; updated_at: string };
 type Health = {
@@ -41,7 +44,13 @@ const suggestions = [
   },
 ];
 
-export function App({ embedded = false }: { embedded?: boolean }) {
+export function App({
+  embedded = false,
+  visible = true,
+}: {
+  embedded?: boolean;
+  visible?: boolean;
+}) {
   const [conversation, setConversation] = useState<{
     id: string;
     messages: UIMessage[];
@@ -52,6 +61,7 @@ export function App({ embedded = false }: { embedded?: boolean }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [calling, setCalling] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -199,15 +209,17 @@ export function App({ embedded = false }: { embedded?: boolean }) {
             >
               <Menu size={20} />
             </button>
-            <strong>Chat</strong>
+            <strong>{calling ? "Voice call" : "Chat"}</strong>
           </div>
           <span className="status">
             <i className={health ? "connected" : ""} />
-            {health
-              ? health.mode === "demo"
-                ? "Demo mode"
-                : "Sonnet 5"
-              : "Connecting"}
+            {calling
+              ? "ElevenLabs"
+              : health
+                ? health.mode === "demo"
+                  ? "Demo mode"
+                  : "Sonnet 5"
+                : "Connecting"}
           </span>
           {embedded && (
             <button
@@ -228,7 +240,7 @@ export function App({ embedded = false }: { embedded?: boolean }) {
             </button>
           </div>
         )}
-        {health?.mode === "demo" && (
+        {health?.mode === "demo" && !calling && (
           <div className="demo-banner">
             You’re trying a sample conversation. Connect Sonnet 5 for answers to
             your own questions.
@@ -245,6 +257,8 @@ export function App({ embedded = false }: { embedded?: boolean }) {
             initialMessages={conversation.messages}
             onSaved={refresh}
             onBusy={setBusy}
+            onCalling={setCalling}
+            visible={visible}
           />
         )}
       </main>
@@ -257,11 +271,15 @@ function Chat({
   initialMessages,
   onSaved,
   onBusy,
+  onCalling,
+  visible,
 }: {
   id: string;
   initialMessages: UIMessage[];
   onSaved: () => Promise<void>;
   onBusy: (busy: boolean) => void;
+  onCalling: (calling: boolean) => void;
+  visible: boolean;
 }) {
   const [input, setInput] = useState("");
   const [copiedId, setCopiedId] = useState("");
@@ -270,37 +288,100 @@ function Chat({
   const scrollArea = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const nearBottom = useRef(true);
-  const { messages, sendMessage, status, error, stop, clearError, regenerate } =
-    useChat({
-      id,
-      messages: initialMessages,
-      transport: new DefaultChatTransport({
-        api: "/api/chat",
-        prepareSendMessagesRequest: ({
+  const currentMessages = useRef(initialMessages);
+  const saveQueue = useRef(Promise.resolve());
+  const saveVersion = useRef(0);
+  const [saveError, setSaveError] = useState("");
+  const [savingVoice, setSavingVoice] = useState(false);
+  const {
+    messages,
+    setMessages,
+    sendMessage,
+    status,
+    error,
+    stop,
+    clearError,
+    regenerate,
+  } = useChat({
+    id,
+    messages: initialMessages,
+    transport: new DefaultChatTransport({
+      api: "/api/chat",
+      prepareSendMessagesRequest: ({
+        id: chatId,
+        messages: outgoing,
+        ...options
+      }) => ({
+        body: {
+          ...options.body,
           id: chatId,
-          messages: outgoing,
-          ...options
-        }) => ({
-          body: {
-            ...options.body,
-            id: chatId,
-            messages: outgoing.map((message) => ({
-              ...message,
-              parts: message.parts.filter((part) => part.type === "text"),
-            })),
-          },
-        }),
+          messages: outgoing.map((message) => ({
+            ...message,
+            parts: message.parts.filter((part) => part.type === "text"),
+          })),
+        },
       }),
-      onFinish: () => {
-        window.history.replaceState(null, "", `#${id}`);
-        void onSaved();
-      },
-    });
+    }),
+    onFinish: () => {
+      window.history.replaceState(null, "", `#${id}`);
+      void onSaved();
+    },
+  });
   const busy = status === "submitted" || status === "streaming";
 
   useEffect(() => {
-    onBusy(busy);
-  }, [busy, onBusy]);
+    currentMessages.current = messages;
+  }, [messages]);
+
+  function saveVoice(next: UIMessage[]) {
+    const version = ++saveVersion.current;
+    setSavingVoice(true);
+    saveQueue.current = saveQueue.current.then(async () => {
+      try {
+        const response = await fetch(`/api/conversations/${id}/voice`, {
+          method: "PUT",
+          signal: AbortSignal.timeout(15000),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: next }),
+        });
+        if (!response.ok)
+          throw new Error(
+            "Could not save the call transcript. Keep this chat open and retry saving.",
+          );
+        if (version === saveVersion.current) setSaveError("");
+        window.history.replaceState(null, "", `#${id}`);
+        void onSaved();
+      } catch {
+        setSaveError(
+          "Could not save the call transcript. Keep this chat open and retry saving.",
+        );
+      } finally {
+        if (version === saveVersion.current) setSavingVoice(false);
+      }
+    });
+  }
+
+  const voice = useVoiceCall({
+    visible,
+    onMessage: (message) => {
+      const next = applyVoiceMessage(currentMessages.current, message);
+      currentMessages.current = next;
+      setMessages(next);
+      saveVoice(next);
+    },
+  });
+  useEffect(() => {
+    onBusy(busy || voice.active || savingVoice || Boolean(saveError));
+    onCalling(voice.active);
+  }, [busy, voice.active, savingVoice, saveError, onBusy, onCalling]);
+  useEffect(() => {
+    if (!savingVoice && !saveError) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [savingVoice, saveError]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Finishing a stream adds answer controls; scroll again when busy changes so they stay visible.
   useEffect(() => {
     if (messages.length && nearBottom.current)
@@ -319,7 +400,8 @@ function Chat({
   }, [input]);
 
   function send(text: string, sourceId?: string) {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || voice.active || savingVoice || saveError)
+      return;
     clearError();
     nearBottom.current = true;
     if (!sourceId) setInput("");
@@ -365,7 +447,13 @@ function Chat({
           <div className="welcome">
             <div className="welcome-hero">
               <div className="welcome-copy">
-                <h1>How can I help?</h1>
+                <h1>{voice.active ? "Let’s talk." : "How can I help?"}</h1>
+                {voice.active && (
+                  <p className="call-welcome">
+                    Ask your question out loud. Your conversation will appear
+                    here.
+                  </p>
+                )}
               </div>
               <div className="clarity-art" aria-hidden="true">
                 <div className="art-orbit" />
@@ -390,22 +478,24 @@ function Chat({
                 </div>
               </div>
             </div>
-            <div className="suggestions">
-              {suggestions.map(({ icon: Icon, text }) => (
-                <button
-                  type="button"
-                  key={text}
-                  className="suggestion"
-                  onClick={() => send(text)}
-                >
-                  <span className="suggestion-icon">
-                    <Icon size={20} strokeWidth={1.6} />
-                  </span>
-                  <span className="suggestion-text">{text}</span>
-                  <ArrowRight size={17} className="suggestion-arrow" />
-                </button>
-              ))}
-            </div>
+            {!voice.active && (
+              <div className="suggestions">
+                {suggestions.map(({ icon: Icon, text }) => (
+                  <button
+                    type="button"
+                    key={text}
+                    className="suggestion"
+                    onClick={() => send(text)}
+                  >
+                    <span className="suggestion-icon">
+                      <Icon size={20} strokeWidth={1.6} />
+                    </span>
+                    <span className="suggestion-text">{text}</span>
+                    <ArrowRight size={17} className="suggestion-arrow" />
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="messages">
@@ -417,7 +507,9 @@ function Chat({
                       <span className="assistant-avatar">
                         <MessageCircle size={15} />
                       </span>
-                      Plainly
+                      {message.id.startsWith("voice-")
+                        ? "Voice agent"
+                        : "Plainly"}
                     </>
                   ) : (
                     <>
@@ -440,7 +532,12 @@ function Chat({
                       <button
                         type="button"
                         className="simplify-button"
-                        disabled={busy}
+                        disabled={
+                          busy ||
+                          voice.active ||
+                          savingVoice ||
+                          Boolean(saveError)
+                        }
                         onClick={() =>
                           send(
                             "Make this answer easier to understand.",
@@ -512,7 +609,9 @@ function Chat({
             <span>{error.message}</span>
             <button
               type="button"
-              disabled={busy}
+              disabled={
+                busy || voice.active || savingVoice || Boolean(saveError)
+              }
               onClick={() => {
                 clearError();
                 void regenerate();
@@ -535,57 +634,100 @@ function Chat({
             {copyError}
           </p>
         )}
-        <form
-          className={`composer ${busy ? "is-busy" : ""}`}
-          onSubmit={(event) => {
-            event.preventDefault();
-            send(input);
-          }}
-        >
-          <label className="sr-only" htmlFor="message-input">
-            Your message
-          </label>
-          <textarea
-            ref={textarea}
-            id="message-input"
-            placeholder="Ask a question…"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            rows={1}
-            maxLength={20000}
-            onKeyDown={(event) => {
-              if (
-                event.key === "Enter" &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                send(input);
-              }
-            }}
-          />
-          <div className="composer-bottom">
-            {busy ? (
-              <button
-                type="button"
-                className="send-button"
-                aria-label="Stop generating"
-                onClick={() => void stop()}
-              >
-                <Square size={16} fill="currentColor" />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                className="send-button"
-                disabled={!input.trim()}
-                aria-label="Send message"
-              >
-                <ArrowUp size={20} />
-              </button>
-            )}
+        {saveError && (
+          <div className="chat-error" role="alert">
+            <span>{saveError}</span>
+            <button
+              type="button"
+              disabled={savingVoice}
+              onClick={() => saveVoice(currentMessages.current)}
+            >
+              Retry saving
+            </button>
           </div>
-        </form>
+        )}
+        <CallControls
+          {...voice}
+          busy={busy || savingVoice || Boolean(saveError)}
+          available={Boolean(voice.agent?.available)}
+          agentName={voice.agent?.name || "your agent"}
+          error={voice.error || voice.agent?.error || ""}
+          onReconnect={() => void voice.refreshAgent()}
+          onStart={() => {
+            clearError();
+            nearBottom.current = true;
+            const context = messages.slice(-20).map((message) => ({
+              role: message.role,
+              text: message.parts
+                .filter((part) => part.type === "text")
+                .map((part) => part.text)
+                .join("\n")
+                .slice(0, 1000),
+            }));
+            voice.start(JSON.stringify(context));
+          }}
+          onEnd={() => voice.end()}
+          onMute={voice.toggleMute}
+        />
+        {!voice.active && (
+          <form
+            className={`composer ${busy ? "is-busy" : ""}`}
+            onSubmit={(event) => {
+              event.preventDefault();
+              send(input);
+            }}
+          >
+            <label className="sr-only" htmlFor="message-input">
+              Your message
+            </label>
+            <textarea
+              ref={textarea}
+              id="message-input"
+              placeholder="Ask a question…"
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              rows={1}
+              maxLength={20000}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  send(input);
+                }
+              }}
+            />
+            <div className="composer-bottom">
+              {busy ? (
+                <button
+                  type="button"
+                  className="send-button"
+                  aria-label="Stop generating"
+                  onClick={() => void stop()}
+                >
+                  <Square size={16} fill="currentColor" />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  className="send-button"
+                  disabled={!input.trim() || savingVoice || Boolean(saveError)}
+                  aria-label="Send message"
+                >
+                  <ArrowUp size={20} />
+                </button>
+              )}
+            </div>
+          </form>
+        )}
+        {!voice.active && voice.supported && (
+          <p className="voice-disclosure">
+            Calls use ElevenLabs. Your voice and recent chat are shared with
+            your agent.
+          </p>
+        )}
         <div className="composer-caption">
           AI can make mistakes. Check important details.
         </div>

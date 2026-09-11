@@ -17,9 +17,11 @@ import {
   textOf,
 } from "./chat";
 import { loadConversation, pool, saveConversation } from "./db";
+import { ElevenLabsAgent, VoiceError } from "./elevenlabs";
 import { accessExpired, demoMode, getModel, modelName } from "./model";
 
 export const app = express();
+const voiceAgent = new ElevenLabsAgent();
 const activeChats = new Set<string>();
 const streamError = (error: unknown) =>
   error instanceof BackendError
@@ -47,6 +49,49 @@ app.get("/api/health", async (_req, res) => {
     model: demoMode ? "Sample responses" : modelName,
     credentialExpiresAt: process.env.AZURE_CREDENTIAL_EXPIRES_AT || null,
   });
+});
+
+app.get("/api/voice/status", async (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    res.json(await voiceAgent.info());
+  } catch (error) {
+    res.json({
+      available: false,
+      error:
+        error instanceof VoiceError
+          ? error.message
+          : "Could not check the voice agent. Please try again.",
+    });
+  }
+});
+app.post("/api/voice/session", async (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const controller = new AbortController();
+  res.on("close", () => controller.abort());
+  res.json({ signedUrl: await voiceAgent.signedUrl(controller.signal) });
+});
+app.put("/api/conversations/:id/voice", async (req, res) => {
+  const parsed = chatRequest.safeParse({
+    id: req.params.id,
+    messages: req.body?.messages,
+  });
+  if (!parsed.success)
+    return res.status(400).json({
+      error:
+        "The call transcript is too large or invalid. Start a new conversation.",
+    });
+  if (activeChats.has(parsed.data.id))
+    return res.status(409).json({
+      error: "Wait for the chat answer to finish before saving the call.",
+    });
+  activeChats.add(parsed.data.id);
+  try {
+    await saveConversation(parsed.data.id, parsed.data.messages);
+    res.json({ saved: true });
+  } finally {
+    activeChats.delete(parsed.data.id);
+  }
 });
 
 app.get("/api/conversations", async (_req, res) => {
@@ -192,7 +237,7 @@ app.use(((error, _req, res, _next) => {
           ? "Message is too large."
           : status === 400
             ? "Invalid request."
-            : error instanceof BackendError
+            : error instanceof BackendError || error instanceof VoiceError
               ? error.message
               : "Could not reach a required service. Check Postgres, the backend session and your connection, then retry.",
     });

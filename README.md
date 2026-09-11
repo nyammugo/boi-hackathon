@@ -34,6 +34,20 @@ The `/website` page is a hackathon recreation. Banking and login links open the 
 
 If setup cannot find a database, start the installed local Postgres service or Docker daemon and rerun it. On macOS, `open -a Docker` starts an installed Docker Desktop; wait for `docker info` to succeed before retrying. Do not overwrite an existing `.env`, reset database volumes, or change unrelated database services. If neither Postgres nor Docker is installed, report the missing prerequisite rather than silently substituting another database.
 
+### Voice calls with your ElevenLabs agent
+
+Set `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID` in the ignored `.env`, then restart the server. Use **Start voice call** in either the full workspace or the website chat window. Allow microphone access and speak naturally; you can interrupt the agent by speaking. **Mute** controls your microphone. **End call** returns to typed chat. The call ends when the chat is hidden, the browser tab is hidden, or the chat unmounts.
+
+Calls use the configured ElevenLabs agent, including its existing voice, model, prompt and tools. The app does not change that agent. Typed chat and Simplify continue to use Buildprompt/Foundry. The call panel identifies the voice agent, and the header switches to ElevenLabs during calls. Azure speech credentials are not needed.
+
+The chat remains visible while the text box is hidden. User and agent transcript events are saved in the same local Postgres conversation. Corrections after an interruption update the existing answer. Saving failures stay visible with **Retry saving**, and navigation is disabled until the transcript is saved. Recent chat context (up to 20 messages, 1,000 characters each) is shared with the voice agent when a call connects. Draft text is preserved when entering and leaving calls.
+
+The browser records and plays audio through the official ElevenLabs client SDK. It receives a temporary signed connection URL from `POST /api/voice/session`; the API key stays on the server and is never included in the browser bundle. Audio is sent to ElevenLabs, where the agent's configured retention settings apply. This app stores text transcripts, not recordings. Calls require HTTPS or localhost and browser microphone support. As with the existing chat API, these routes are for this local, single-workspace prototype and need access control before public deployment.
+
+Checks: `npm run test:voice` covers the voice lifecycle and ElevenLabs adapter. `npm run test:api` covers transcript persistence, validation and chat write conflicts. No test command calls a live voice provider.
+
+References: [ElevenLabs JavaScript SDK](https://elevenlabs.io/docs/eleven-agents/libraries/java-script), [agent authentication](https://elevenlabs.io/docs/eleven-agents/customization/authentication).
+
 ### Manual Docker setup
 
 For an explicit Docker setup instead of auto-detection:

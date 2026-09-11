@@ -53,6 +53,16 @@ test("health reports real Postgres and demo mode", async () => {
   assert.equal(health.mode, "demo");
 });
 
+test("source routes return an empty list in demo mode and reject unavailable documents", async () => {
+  const response = await fetch(`${base}/api/sources`);
+  assert.deepEqual(await response.json(), []);
+  assert.equal((await fetch(`${base}/api/sources/not-a-uuid`)).status, 400);
+  assert.equal(
+    (await fetch(`${base}/api/sources/${randomUUID()}`)).status,
+    404,
+  );
+});
+
 test("streams and persists a chat, then simplifies an older saved answer without replacing it", async () => {
   const id = testId();
   const response = await post({ id, messages: [question()] });

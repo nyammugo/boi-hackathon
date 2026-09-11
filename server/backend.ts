@@ -23,6 +23,15 @@ const sourcesSchema = z.array(
   z.object({ id: z.string(), name: z.string(), sourceCount: z.number() }),
 );
 
+// Fixed Team 25 sources for this demo; never changes shared staging defaults.
+const investmentCollections = [
+  "35cb7d83-a92c-447f-953c-060a243d9062", // Emerald master terms
+  "15772165-59d3-4fa1-92bf-c7750d0363c9", // Emerald disclosures
+  "f215a321-d5fd-4134-86e1-69323799de16", // Reviewed New Ireland documents
+  "c6efc7d7-bab8-43d7-8608-8df51115e1d0", // Fictional product catalogue
+  "a4f102aa-b2a8-4ea5-9569-628265e0807b", // Product risk and cost register
+];
+
 export class BackendError extends Error {}
 
 export class BuildpromptBackend {
@@ -31,6 +40,10 @@ export class BuildpromptBackend {
   constructor(
     readonly origin: string,
     private sessionPath = ".backend-session.json",
+    private collectionIds: string[] | undefined = origin ===
+    "https://staging.boi.buildprompt.app"
+      ? investmentCollections
+      : undefined,
   ) {}
 
   request(path: string, init?: RequestInit): Promise<Response> {
@@ -81,8 +94,12 @@ export class BuildpromptBackend {
     return task;
   }
 
-  async query(procedure: string): Promise<unknown> {
-    const response = await this.request(`/api/trpc/${procedure}`);
+  async query(procedure: string, input?: unknown): Promise<unknown> {
+    const search =
+      input === undefined
+        ? ""
+        : `?input=${encodeURIComponent(JSON.stringify({ json: input }))}`;
+    const response = await this.request(`/api/trpc/${procedure}${search}`);
     const envelope = z
       .object({
         result: z.object({
@@ -94,6 +111,53 @@ export class BuildpromptBackend {
       })
       .parse(await response.json());
     return envelope.result.data.json;
+  }
+
+  async sourceFiles() {
+    const collectionIds =
+      this.collectionIds ??
+      z
+        .object({ collectionIds: z.array(z.string()) })
+        .parse(await this.query("sourceDefaults.getSettings")).collectionIds;
+    const files: { id: string; name: string }[] = [];
+    for (const id of collectionIds) {
+      let page = 1;
+      let totalPages = 1;
+      do {
+        const result = z
+          .object({
+            files: z.array(
+              z.object({ id: z.uuid(), name: z.string(), status: z.string() }),
+            ),
+            pagination: z.object({
+              totalPages: z.number().int().nonnegative(),
+            }),
+          })
+          .parse(
+            await this.query("sources.getCollection", {
+              id,
+              page,
+              pageSize: 200,
+            }),
+          );
+        files.push(
+          ...result.files
+            .filter((file) => file.status === "ready")
+            .map(({ id, name }) => ({ id, name })),
+        );
+        totalPages = result.pagination.totalPages;
+        page++;
+      } while (page <= totalPages);
+    }
+    return files;
+  }
+
+  async sourceFile(id: string) {
+    if (!z.uuid().safeParse(id).success) return undefined;
+    const file = (await this.sourceFiles()).find((file) => file.id === id);
+    if (!file) return undefined;
+    const response = await this.request(`/api/files/${id}`);
+    return { file, response };
   }
 
   async info() {
@@ -108,8 +172,13 @@ export class BuildpromptBackend {
     const collections = sourcesSchema.parse(
       await this.query("sources.getCollections"),
     );
+    const collectionIds = this.collectionIds ?? defaults.collectionIds;
+    if (collectionIds.some((id) => !collections.some((item) => item.id === id)))
+      throw new BackendError(
+        "A selected BOI document collection is unavailable. Check BUILDPROMPT_COLLECTION_IDS.",
+      );
     const selected = collections.filter((collection) =>
-      defaults.collectionIds.includes(collection.id),
+      collectionIds.includes(collection.id),
     );
     return {
       model: model.effectivePromptingDefaultEndpointName,
@@ -128,7 +197,12 @@ export class BuildpromptBackend {
   ): Promise<ReadableStream<UIMessageChunk>> {
     const response = await this.request("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({
+        messages,
+        ...(this.collectionIds
+          ? { sourceSelection: { collections: this.collectionIds, files: [] } }
+          : {}),
+      }),
       signal,
     });
     if (
@@ -153,5 +227,11 @@ export class BuildpromptBackend {
 
 export const backend =
   process.env.BUILDPROMPT_URL && process.env.DEMO_MODE !== "true"
-    ? new BuildpromptBackend(process.env.BUILDPROMPT_URL.replace(/\/$/, ""))
+    ? new BuildpromptBackend(
+        process.env.BUILDPROMPT_URL.replace(/\/$/, ""),
+        undefined,
+        process.env.BUILDPROMPT_COLLECTION_IDS?.split(",")
+          .map((id) => id.trim())
+          .filter(Boolean),
+      )
     : undefined;

@@ -10,8 +10,51 @@ import { BuildpromptBackend } from "./backend";
 const directory = await mkdtemp(join(tmpdir(), "plainly-backend-"));
 const cookies: (string | undefined)[] = [];
 const requests: unknown[] = [];
+const sourceId = "fc8c7b70-93e5-440f-9d32-d5c6080a1d13";
+const nextSourceId = "e10a707b-ca4f-4623-95ec-16d9cc5c1d1b";
 const server = createServer(async (req, res) => {
   cookies.push(req.headers.cookie);
+  if (req.url?.startsWith("/api/trpc/sources.getCollection?")) {
+    const input = JSON.parse(
+      new URL(req.url, "http://localhost").searchParams.get("input") || "{}",
+    ).json;
+    assert.equal(input.id, "boi");
+    res.writeHead(200, { "content-type": "application/json" }).end(
+      JSON.stringify({
+        result: {
+          data: {
+            json: {
+              files:
+                input.page === 1
+                  ? [
+                      { id: sourceId, name: "terms.md", status: "ready" },
+                      {
+                        id: "89539f41-5282-4d98-9eb3-f25675f0d9c2",
+                        name: "pending.md",
+                        status: "processing",
+                      },
+                    ]
+                  : [
+                      {
+                        id: nextSourceId,
+                        name: "overview.md",
+                        status: "ready",
+                      },
+                    ],
+              pagination: { totalPages: 2 },
+            },
+          },
+        },
+      }),
+    );
+    return;
+  }
+  if (req.url === `/api/files/${sourceId}`) {
+    res
+      .writeHead(200, { "content-type": "text/markdown" })
+      .end("# Actual source document");
+    return;
+  }
   if (req.url === "/api/rejected") {
     res.writeHead(401).end("private upstream details");
     return;
@@ -131,6 +174,28 @@ test("reports only default source collections and verifies the Sonnet 5 default"
   });
 });
 
+test("lists ready source documents from every page in the selected collections", async () => {
+  const { backend } = await client("source-list");
+  assert.deepEqual(await backend.sourceFiles(), [
+    { id: sourceId, name: "terms.md" },
+    { id: nextSourceId, name: "overview.md" },
+  ]);
+});
+
+test("opens actual selected documents and rejects invalid or unselected IDs", async () => {
+  const { backend } = await client("source-download");
+  const source = await backend.sourceFile(sourceId);
+  assert.equal(source?.file.name, "terms.md");
+  assert.equal(await source?.response.text(), "# Actual source document");
+  const before = cookies.length;
+  assert.equal(await backend.sourceFile("../private"), undefined);
+  assert.equal(cookies.length, before);
+  assert.equal(
+    await backend.sourceFile("89539f41-5282-4d98-9eb3-f25675f0d9c2"),
+    undefined,
+  );
+});
+
 test("stores rotated session cookies before starting the next request", async () => {
   const { backend, file } = await client("rotation");
   await Promise.all([
@@ -142,6 +207,28 @@ test("stores rotated session cookies before starting the next request", async ()
     JSON.parse(await readFile(file, "utf8")).cookie,
     "wos-session=rotated",
   );
+});
+
+test("uses app-selected collections for both chat and health without changing shared defaults", async () => {
+  const { file } = await client("selection");
+  const backend = new BuildpromptBackend(origin, file, ["other"]);
+  const info = await backend.info();
+  assert.deepEqual(info.collections, ["Unselected"]);
+  assert.equal(info.documentCount, 9);
+  const stream = await backend.stream([], new AbortController().signal);
+  for await (const _event of stream) {
+    /* Consume the response. */
+  }
+  assert.deepEqual(requests.at(-1), {
+    messages: [],
+    sourceSelection: { collections: ["other"], files: [] },
+  });
+});
+
+test("reports an unavailable configured collection instead of silently omitting it", async () => {
+  const { file } = await client("missing-selection");
+  const backend = new BuildpromptBackend(origin, file, ["missing"]);
+  await assert.rejects(backend.info(), /collection is unavailable/);
 });
 
 test("blocks expired sessions and cross-origin requests before sending credentials", async () => {

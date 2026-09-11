@@ -16,8 +16,8 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
 import { api } from "./api";
+import { MessageContent, type SourceFile } from "./MessageContent";
 
 type Conversation = { id: string; title: string; updated_at: string };
 type Health = {
@@ -51,6 +51,7 @@ export function App() {
   }>(() => ({ id: crypto.randomUUID(), messages: [] }));
   const [history, setHistory] = useState<Conversation[]>([]);
   const [health, setHealth] = useState<Health>();
+  const [sources, setSources] = useState<SourceFile[]>([]);
   const [notice, setNotice] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -58,12 +59,14 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextHistory, nextHealth] = await Promise.all([
+      const [nextHistory, nextHealth, nextSources] = await Promise.all([
         api<Conversation[]>("/api/conversations"),
         api<Health>("/api/health"),
+        api<SourceFile[]>("/api/sources"),
       ]);
       setHistory(nextHistory);
       setHealth(nextHealth);
+      setSources(nextSources);
       setNotice("");
     } catch (error) {
       setNotice(
@@ -201,7 +204,7 @@ export function App() {
           <p>
             {health?.backend
               ? health.backend.collections.length
-                ? `${health.backend.documentCount} documents in ${health.backend.collections.length} default collections. Answers use BOI staging’s sources.`
+                ? `${health.backend.documentCount} documents in ${health.backend.collections.length} selected collections. Answers use BOI staging’s sources.`
                 : "Your chat is connected. Document collections haven’t been selected yet."
               : "Bring your documents into the conversation."}
           </p>
@@ -266,6 +269,7 @@ export function App() {
             key={conversation.id}
             id={conversation.id}
             initialMessages={conversation.messages}
+            sources={sources}
             onSaved={refresh}
             onBusy={setBusy}
           />
@@ -276,6 +280,7 @@ export function App() {
 }
 
 function Chat({
+  sources,
   id,
   initialMessages,
   onSaved,
@@ -283,6 +288,7 @@ function Chat({
 }: {
   id: string;
   initialMessages: UIMessage[];
+  sources: SourceFile[];
   onSaved: () => Promise<void>;
   onBusy: (busy: boolean) => void;
 }) {
@@ -477,12 +483,15 @@ function Chat({
                   )}
                 </div>
                 <div className="message-content">
-                  <Markdown>
-                    {message.parts
+                  <MessageContent
+                    messageId={message.id}
+                    streaming={busy && index === messages.length - 1}
+                    sources={sources}
+                    text={message.parts
                       .filter((part) => part.type === "text")
                       .map((part) => part.text)
                       .join("\n")}
-                  </Markdown>
+                  />
                 </div>
                 {message.role === "assistant" &&
                   !(busy && index === messages.length - 1) &&

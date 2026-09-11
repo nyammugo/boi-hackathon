@@ -1190,3 +1190,244 @@ h1 {
     scroll-behavior: auto;
   }
 }
+
+/* Citation badges and source cards follow the chat's blue/navy palette. */
+.citation-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 23px;
+  min-height: 23px;
+  margin: 0 2px;
+  padding: 1px 6px;
+  border: 1px solid #c9d9f5;
+  border-radius: 7px;
+  background: #eef5ff;
+  color: var(--navy);
+  font: 600 11px / 1.4 var(--sans);
+  cursor: pointer;
+}
+.citation-badge:hover,
+.citation-badge[aria-expanded="true"] {
+  background: var(--navy);
+  color: white;
+  border-color: var(--navy);
+}
+.message-content [data-footnotes] {
+  margin-top: 24px;
+  padding-top: 15px;
+  border-top: 1px solid #e1e7f0;
+}
+.message-content [data-footnotes] h2 {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0 0 10px;
+  padding: 0;
+  clip: auto;
+  overflow: visible;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+}
+.message-content [data-footnotes] ol {
+  padding-left: 23px;
+  margin: 0;
+}
+.citation-card {
+  margin: 7px 0;
+  padding: 0 0 0 3px;
+  color: var(--navy);
+  scroll-margin: 20px;
+}
+.citation-card::marker {
+  font-size: 11px;
+  font-weight: 600;
+}
+.citation-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 13px;
+  border: 1px solid #dce6f5;
+  border-radius: 8px;
+  background: #f7faff;
+  color: var(--navy);
+  text-align: left;
+  cursor: pointer;
+}
+.citation-summary > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.citation-summary strong {
+  display: block;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.citation-summary small {
+  color: #646e83;
+  font-size: 11px;
+}
+.citation-summary svg {
+  flex-shrink: 0;
+}
+.citation-summary .is-expanded {
+  transform: rotate(180deg);
+}
+.citation-summary:hover {
+  background: #eef5ff;
+}
+.citation-detail {
+  padding: 4px 13px 13px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.citation-detail blockquote {
+  margin: 10px 0 12px;
+  color: #535e73;
+}
+.citation-document {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--blue);
+  font-weight: 600;
+}
+.citation-unavailable {
+  color: #646e83;
+  margin-bottom: 0;
+}
+.message-content table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.message-content th,
+.message-content td {
+  padding: 8px 11px;
+  border: 1px solid #dce6f5;
+  text-align: left;
+}
+.message-content th {
+  background: #eef5ff;
+  color: var(--navy);
+}
+
+.chat-chart {
+  margin: 24px 0;
+  padding: 20px;
+  min-width: 0;
+  border: 1px solid #dce6f5;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+.chat-chart figcaption {
+  color: var(--navy);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.chart-description {
+  margin: 5px 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.chart-canvas {
+  width: 100%;
+  height: 260px;
+  min-width: 0;
+}
+.chart-axis-label,
+.chart-x-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.chart-axis-label {
+  margin: 14px 0 0;
+}
+.chart-x-label {
+  text-align: center;
+}
+.chart-data {
+  margin-top: 15px;
+  padding-top: 12px;
+  border-top: 1px solid #e1e7f0;
+  font-size: 12px;
+}
+.chart-data summary,
+.chart-fallback summary {
+  color: var(--navy);
+  cursor: pointer;
+  width: fit-content;
+}
+.chart-data summary:focus-visible,
+.chart-fallback summary:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 4px;
+}
+.chart-data table {
+  margin-top: 12px;
+  width: 100%;
+}
+.chart-legend {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.chart-legend li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin: 6px 0;
+}
+.chart-legend i {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+.chart-legend span {
+  flex: 1;
+}
+.chart-legend strong {
+  font-variant-numeric: tabular-nums;
+}
+.chart-pending,
+.chart-fallback {
+  margin: 20px 0;
+  padding: 18px;
+  border: 1px solid #dce6f5;
+  border-radius: 10px;
+  color: var(--muted);
+  background: #f7faff;
+  font-size: 12px;
+}
+.chart-fallback p {
+  margin: 0 0 8px;
+}
+@media (max-width: 560px) {
+  .chat-chart {
+    padding: 14px 8px;
+  }
+  .chat-chart figcaption,
+  .chart-description,
+  .chart-axis-label,
+  .chart-data {
+    margin-left: 6px;
+    margin-right: 6px;
+  }
+  .chart-canvas {
+    height: 230px;
+  }
+  .chart-legend {
+    padding: 0 6px;
+  }
+}

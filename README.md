@@ -49,7 +49,8 @@ If the database is still starting, rerun `npm run db:migrate` after `docker comp
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `DATABASE_URL` | Local Postgres connection; setup detects/writes this if missing | See `.env.example` for Docker |
-| `BUILDPROMPT_URL` | Use BOI staging chat, tools and source defaults through the backend | Set by backend setup |
+| `BUILDPROMPT_URL` | Use BOI staging chat, tools and sources through the backend | Set by backend setup |
+| `BUILDPROMPT_COLLECTION_IDS` | Server-only comma-separated collection ID override; no user dropdown | Five investment collections for BOI staging; backend defaults elsewhere |
 | `AZURE_AI_ENDPOINT` | Foundry resource URL, without `/anthropic/v1` | Missing configuration enables demo mode |
 | `AZURE_AI_DEPLOYMENT` | Sonnet 5 deployment name | `claude-sonnet-5` |
 | `AZURE_TENANT_ID` | Tenant for the dedicated application credential | Set by Foundry setup |
@@ -104,7 +105,29 @@ If Key Vault denies access and temporary grants have been authorized, an agent w
 
 The server forwards its cookie only to the configured backend, follows no redirects, and saves rotated cookies on authenticated responses. Nothing is placed in browser cookies or client JavaScript. It stops using the session at the existing Foundry credential deadline, or 24 hours after setup when no deadline exists. **This is a local deadline, not a change to WorkOS's session lifetime**; the staging identity remains until deleted. The retained user ID supports later cleanup via WorkOS. Fresh access requires an explicitly authorized new session.
 
-Chat uses staging's default source selection and model. It does not create a staging conversation thread: conversation history remains in the local database. The sidebar reports selected source counts. At initial verification staging had source collections but no default selection, so ordinary document search was inactive. Selecting sources and uploading your documents are next-pass work; the app does not change staging-wide source defaults.
+Chat uses staging's model and the five built-in investment collections, unless overridden by `BUILDPROMPT_COLLECTION_IDS`. Other backend environments use their default source selection. It does not create a staging conversation thread: conversation history remains in the local database. The sidebar reports selected source counts. At initial verification staging had source collections but no default selection, so ordinary document search was inactive. The server can select existing collections for every request; the app does not change staging-wide source defaults. Local uploads are not implemented.
+
+### Investment demo sources
+
+The demo uses five fixed server-side collections on `https://staging.boi.buildprompt.app`: Emerald master terms, Emerald disclosures, the fictional range master catalogue, its risk/cost register, and reviewed New Ireland public documents (14 files). These collections are built into the adapter for BOI staging, so no additional configuration or source dropdown is needed. The equivalent optional override in the ignored `.env` is:
+
+```dotenv
+BUILDPROMPT_COLLECTION_IDS=35cb7d83-a92c-447f-953c-060a243d9062,15772165-59d3-4fa1-92bf-c7750d0363c9,c6efc7d7-bab8-43d7-8608-8df51115e1d0,a4f102aa-b2a8-4ea5-9569-628265e0807b,f215a321-d5fd-4134-86e1-69323799de16
+```
+
+The health endpoint and sidebar report the selected collections. Requests pass these IDs through BuildPrompt's existing `sourceSelection` contract. Other staging collections and shared defaults are unaffected. An unknown configured collection produces a health error.
+
+### In-chat citations
+
+Answers using BuildPrompt footnotes (`[^1]` plus `[^1]: filename | p. 2 | excerpt`) display numbered badges and a Sources section. Select a badge or source card to reveal its excerpt and page label. Open document reads the actual file through the server-only staging session. This also works for existing saved chats. Document names must match exactly one ready file in the preselected collections; otherwise the card shows that its document link is unavailable. The excerpt remains model-supplied text, not an independently verified quotation.
+
+The server lists selected files at `/api/sources` and restricts `/api/sources/:id` to that selection. Backend credentials stay on the server. Markdown tables and footnotes use `remark-gfm` with the existing React Markdown renderer. Citation rendering checks run with `npm run test:citations`.
+
+### In-chat charts
+
+BuildPrompt's `bp-chart` and `buildprompt-chart` blocks now render as responsive Recharts visuals, using the same six types as BuildPrompt: line, area, bar, pie, donut and scatter. A JSON code block is also rendered when it contains a valid chart specification. Titles, descriptions, labels and values come from the supplied chart data; hover shows values, and View chart data exposes an accessible table. Existing saved answers render without regeneration.
+
+Incomplete chart blocks show Preparing chart while streaming. Invalid or unsupported chart specifications show a fallback with the original data. Validation rejects missing values, invalid numeric cells and oversized series rather than silently discarding rows. Citations remain connected across charts. Run `npm run test:charts` for these cases.
 
 ### Direct Foundry setup with 24-hour access (optional)
 
@@ -182,6 +205,6 @@ Reference: [AI SDK chat and persistence](https://ai-sdk.dev/docs/ai-sdk-ui/chatb
 
 - Working streamed chat, Markdown answers, Stop, Retry, copy, saved conversation history, and Simplify on any completed answer.
 - Responsive interface with an explicit demo-mode label and useful error states.
-- BOI staging provides the model and its existing chat tools. Document search follows staging's default source selection. A local `documents` table is reserved for the next pass; local uploads, parsing and retrieval are not implemented. Direct Foundry mode has no document access.
+- BOI staging provides the model and its existing chat tools. Document search automatically uses the five built-in investment demo collections on BOI staging; a server-side override is available. A local `documents` table is reserved for the next pass; local uploads, parsing and retrieval are not implemented. Direct Foundry mode has no document access.
 - This is a local, single-workspace hackathon app with no authentication. The server binds to loopback. All local users of this instance share its conversations. Add access control before exposing it beyond your machine.
 - The first pass caps requests at 100 messages, 20,000 characters per text part, and 512 KB total. Start a new conversation when you reach a limit. Conversation history shows the latest 50 chats.

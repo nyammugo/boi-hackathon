@@ -25,6 +25,7 @@ import {
 } from "./db";
 import { DocumentError, extractDocument, letterPrompt } from "./documents";
 import { accessExpired, demoMode, getModel, modelName } from "./model";
+import { createSpeech, SpeechError, speechRequest } from "./speech";
 
 import { verifyLetter } from "./verification";
 
@@ -142,6 +143,29 @@ app.get("/api/conversations/:id", async (req, res) => {
   if (!messages)
     return res.status(404).json({ error: "Conversation not found." });
   res.json({ messages });
+});
+
+app.post("/api/speech", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const parsed = speechRequest.safeParse(req.body);
+  if (!parsed.success)
+    return res.status(400).json({
+      error: "Send an answer with 1 to 20,000 characters to read aloud.",
+    });
+  const controller = new AbortController();
+  res.on("close", () => controller.abort());
+  try {
+    const audio = await createSpeech(parsed.data.text, controller.signal);
+    if (!controller.signal.aborted) res.json(audio);
+  } catch (error) {
+    if (!controller.signal.aborted)
+      res.status(error instanceof SpeechError ? error.status : 502).json({
+        error:
+          error instanceof SpeechError
+            ? error.message
+            : "Could not reach ElevenLabs. Please try again.",
+      });
+  }
 });
 
 app.post("/api/chat", async (req, res) => {

@@ -20,7 +20,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { MessageContent, type SourceFile } from "./MessageContent";
-import { canReadAloud, readAloud } from "./readAloud";
+import { readAloud } from "./readAloud";
 
 type Conversation = { id: string; title: string; updated_at: string };
 type Health = {
@@ -291,7 +291,10 @@ function Chat({
   const [copyError, setCopyError] = useState("");
   const [readingId, setReadingId] = useState("");
   const [readError, setReadError] = useState("");
-  const cancelReading = useRef<(() => void) | null>(null);
+  const [readingState, setReadingState] = useState<
+    "loading" | "ready" | "playing"
+  >("loading");
+  const readingSession = useRef<ReturnType<typeof readAloud> | null>(null);
   const [showScroll, setShowScroll] = useState(false);
   const scrollArea = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -325,9 +328,9 @@ function Chat({
   const generating = status === "submitted" || status === "streaming";
   const busy = generating || uploading;
 
-  useEffect(() => () => cancelReading.current?.(), []);
+  useEffect(() => () => readingSession.current?.stop(), []);
   useEffect(() => {
-    if (!active) cancelReading.current?.();
+    if (!active) readingSession.current?.stop();
   }, [active]);
 
   useEffect(() => {
@@ -352,7 +355,7 @@ function Chat({
 
   function send(text: string, sourceId?: string) {
     if (!text.trim() || busy) return;
-    cancelReading.current?.();
+    readingSession.current?.stop();
     clearError();
     nearBottom.current = true;
     if (!sourceId) setInput("");
@@ -396,6 +399,7 @@ function Chat({
       const data = await response.json();
       if (!response.ok)
         throw new Error(data.error || "Could not read this letter. Try again.");
+      readingSession.current?.stop();
       nearBottom.current = true;
       void sendMessage({
         text: `Explain this letter: ${data.name}`,
@@ -433,19 +437,27 @@ function Chat({
 
   function toggleReading(messageId: string, button: HTMLButtonElement) {
     const wasReading = readingId === messageId;
-    cancelReading.current?.();
+    if (wasReading && readingState === "ready") {
+      readingSession.current?.play();
+      return;
+    }
+    readingSession.current?.stop();
     setReadError("");
     if (wasReading) return;
     const content = button
       .closest(".message")
       ?.querySelector<HTMLElement>(".message-content");
-    if (!content || !canReadAloud()) return;
+    if (!content) return;
     setReadingId(messageId);
-    cancelReading.current = readAloud(content, (error) => {
-      setReadingId("");
-      setReadError(error ?? "");
-      cancelReading.current = null;
-    });
+    readingSession.current = readAloud(
+      content,
+      (error) => {
+        setReadingId("");
+        setReadError(error ?? "");
+        readingSession.current = null;
+      },
+      setReadingState,
+    );
   }
 
   return (
@@ -601,24 +613,23 @@ function Chat({
                       <button
                         type="button"
                         className="read-aloud-button"
-                        disabled={!canReadAloud()}
-                        title={
-                          canReadAloud()
-                            ? undefined
-                            : "Read aloud is not available in this browser."
-                        }
                         aria-pressed={readingId === message.id}
                         onClick={(event) =>
                           toggleReading(message.id, event.currentTarget)
                         }
                       >
-                        {readingId === message.id ? (
+                        {readingId === message.id &&
+                        readingState !== "ready" ? (
                           <Square size={14} />
                         ) : (
                           <Volume2 size={15} />
                         )}
                         {readingId === message.id
-                          ? "Stop reading"
+                          ? readingState === "loading"
+                            ? "Cancel loading"
+                            : readingState === "ready"
+                              ? "Play audio"
+                              : "Stop reading"
                           : "Read aloud"}
                       </button>
                       <button
@@ -684,7 +695,7 @@ function Chat({
               type="button"
               disabled={busy}
               onClick={() => {
-                cancelReading.current?.();
+                readingSession.current?.stop();
                 clearError();
                 void regenerate();
               }}

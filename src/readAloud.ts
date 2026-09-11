@@ -1,47 +1,34 @@
-const blockSelector = "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote";
+const blockSelector =
+  "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, div, figcaption, th, td";
 
-// Keep utterances short for speech engines that stop during long answers.
-// Offsets always refer to the original rendered text, including whitespace.
-export function speechChunks(text: string) {
-  const chunks: { text: string; start: number; end: number }[] = [];
-  let start = -1;
-  let end = 0;
-  function flush() {
-    if (start < 0) return;
-    chunks.push({ text: text.slice(start, end), start, end });
-    start = -1;
-  }
-  for (const match of text.matchAll(/\S+/g)) {
-    if (
-      start >= 0 &&
-      (match.index + match[0].length - start > 220 ||
-        text.slice(end, match.index).includes("\n"))
-    )
-      flush();
-    if (start < 0) start = match.index;
-    end = match.index + match[0].length;
-    if (/[.!?]["”')\]]*$/.test(match[0])) flush();
-  }
-  flush();
-  return chunks;
-}
+type WordTiming = {
+  start: number;
+  end: number;
+  startTime: number;
+  endTime: number;
+};
+type SpeechAudio = { audioBase64: string; words: WordTiming[] };
 
-export function canReadAloud() {
-  return (
-    typeof window !== "undefined" &&
-    "speechSynthesis" in window &&
-    "SpeechSynthesisUtterance" in window
-  );
+export function wordAtTime(words: WordTiming[], time: number) {
+  return words.find((word) => time >= word.startTime && time < word.endTime);
 }
 
 export function readAloud(
   element: HTMLElement,
   onFinish: (error?: string) => void,
+  onState: (state: "loading" | "ready" | "playing") => void,
 ) {
-  const synthesis = window.speechSynthesis;
   const nodes: { node: Text; start: number; end: number }[] = [];
   let text = "";
   function visit(node: Node) {
+    // Citation controls and collapsed chart/source details are not answer text.
+    if (
+      node instanceof Element &&
+      node.matches(
+        '[hidden], [aria-hidden="true"], button, svg, summary, details:not([open])',
+      )
+    )
+      return;
     if (node.nodeType === Node.TEXT_NODE) {
       const start = text.length;
       text += node.textContent;
@@ -55,7 +42,6 @@ export function readAloud(
     if (block) text += "\n";
   }
   visit(element);
-  const chunks = speechChunks(text);
   const highlights =
     typeof CSS !== "undefined" &&
     "highlights" in CSS &&
@@ -64,7 +50,6 @@ export function readAloud(
       : undefined;
   let fallback: Element | null = null;
   let finished = false;
-  let utterance: SpeechSynthesisUtterance | undefined;
 
   function clearHighlight() {
     highlights?.delete("read-aloud");
@@ -88,58 +73,95 @@ export function readAloud(
     }
   }
 
+  const controller = new AbortController();
+  const audio = new Audio();
+  let audioUrl: string | undefined;
+  let frame = 0;
+  let words: WordTiming[] = [];
+  let previousWord: WordTiming | undefined;
+
   function finish(error?: string) {
     if (finished) return;
     finished = true;
-    if (utterance) {
-      utterance.onstart = null;
-      utterance.onboundary = null;
-      utterance.onend = null;
-      utterance.onerror = null;
-    }
+    controller.abort();
+    cancelAnimationFrame(frame);
+    audio.onended = null;
+    audio.onerror = null;
+    audio.onplaying = null;
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
     clearHighlight();
-    synthesis.cancel();
     onFinish(error);
   }
 
-  function speak(index: number) {
+  function followAudio() {
     if (finished) return;
-    const chunk = chunks[index];
-    if (!chunk) {
-      finish();
-      return;
+    const word = wordAtTime(words, audio.currentTime);
+    if (word !== previousWord) {
+      if (word) highlight(word.start, word.end);
+      else clearHighlight();
+      previousWord = word;
     }
-    utterance = new SpeechSynthesisUtterance(chunk.text);
-    utterance.lang = element.closest("[lang]")?.getAttribute("lang") || "en";
-    const current = utterance;
-    current.onstart = () => {
-      if (!finished && utterance === current) highlight(chunk.start, chunk.end);
-    };
-    current.onboundary = (event) => {
-      if (finished || utterance !== current || event.name !== "word") return;
-      // Some voices provide a zero charLength; find the word ourselves.
-      const word = chunk.text.slice(event.charIndex).match(/^\S+/)?.[0];
-      if (word)
-        highlight(
-          chunk.start + event.charIndex,
-          chunk.start + event.charIndex + word.length,
-        );
-    };
-    current.onend = () => {
-      if (utterance === current) speak(index + 1);
-    };
-    current.onerror = () => {
-      if (utterance === current)
-        finish("Could not read this answer aloud. Please try again.");
-    };
+    frame = requestAnimationFrame(followAudio);
+  }
+
+  async function play() {
+    if (finished || !audioUrl) return;
     try {
-      synthesis.speak(current);
-    } catch {
-      finish("Could not read this answer aloud. Please try again.");
+      await audio.play();
+    } catch (error) {
+      if (finished) return;
+      // Some browsers require another user gesture after audio is downloaded.
+      if (error instanceof DOMException && error.name === "NotAllowedError")
+        onState("ready");
+      else finish("Could not play this answer aloud. Please try again.");
     }
   }
 
-  synthesis.cancel();
-  speak(0);
-  return () => finish();
+  audio.onplaying = () => {
+    if (finished) return;
+    onState("playing");
+    cancelAnimationFrame(frame);
+    followAudio();
+  };
+  audio.onended = () => finish();
+  audio.onerror = () =>
+    finish("Could not play this answer aloud. Please try again.");
+
+  onState("loading");
+  void (async () => {
+    try {
+      const response = await fetch("/api/speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(
+          data.error || "Could not generate audio. Please try again.",
+        );
+      }
+      const data: SpeechAudio = await response.json();
+      if (finished) return;
+      words = data.words;
+      const bytes = Uint8Array.from(atob(data.audioBase64), (character) =>
+        character.charCodeAt(0),
+      );
+      audioUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
+      audio.src = audioUrl;
+      await play();
+    } catch (error) {
+      if (!finished)
+        finish(
+          error instanceof Error
+            ? error.message
+            : "Could not read this answer aloud. Please try again.",
+        );
+    }
+  })();
+  return { stop: () => finish(), play: () => void play() };
 }

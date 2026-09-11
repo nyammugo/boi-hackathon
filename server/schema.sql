@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 CREATE INDEX IF NOT EXISTS conversations_updated_at_idx ON conversations (updated_at DESC);
 
--- Reserved for the document ingestion pass. No document grounding is claimed yet.
+-- Extracted letter text; metadata binds each upload to its local conversation.
 CREATE TABLE IF NOT EXISTS documents (
   id UUID PRIMARY KEY,
   name TEXT NOT NULL,

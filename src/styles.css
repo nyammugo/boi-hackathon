@@ -994,3 +994,60 @@ h1 {
     display: none;
   }
 }
+
+.letter-hint {
+  display: block;
+  color: #757d92;
+  font-size: 12px;
+}
+.letter-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: auto;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font-size: 12px;
+  text-align: left;
+}
+.letter-button:hover:not(:disabled) {
+  color: var(--navy);
+  text-decoration: underline;
+}
+.letter-button:disabled,
+.suggestion:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.letter-status {
+  align-items: center;
+}
+.letter-status > svg {
+  flex-shrink: 0;
+}
+
+.letter-verification {
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f5f8ff;
+  color: var(--navy);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+}
+.letter-verification.is-matched {
+  border-color: #72d9bd;
+  background: #effcf7;
+}
+.letter-verification p {
+  margin: 5px 0;
+}
+.letter-verification small {
+  display: block;
+  color: #617086;
+  font-size: 10px;
+}

@@ -21,7 +21,8 @@
     "test:chat": "tsx --test server/chat.test.ts",
     "test:model": "tsx --test server/model.test.ts",
     "test:backend": "tsx --test server/backend.test.ts",
-    "test:api": "tsx --test server/app.test.ts"
+    "test:api": "tsx --test server/app.test.ts",
+    "test:documents": "tsx --test server/documents.test.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.52",
@@ -31,6 +32,8 @@
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",
+    "mammoth": "^1.12.2",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.16.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

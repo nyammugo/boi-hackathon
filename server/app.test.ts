@@ -42,6 +42,10 @@ after(async () => {
   await pool.query("DELETE FROM conversations WHERE id = ANY($1::uuid[])", [
     ids,
   ]);
+  await pool.query(
+    "DELETE FROM documents WHERE metadata->>'conversationId' = ANY($1::text[])",
+    [ids],
+  );
   await pool.end();
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
@@ -143,4 +147,129 @@ test("rejects concurrent writes to the same chat", async () => {
   assert.equal(second.status, 409);
   await first.text();
   assert.equal((await loadConversation(id))?.length, 2);
+});
+
+test("uploads a letter, keeps it on reload and rejects cross-conversation access", async () => {
+  const id = testId();
+  const content = "Please pay €125 by 30 September 2026.";
+  const upload = await fetch(
+    `${base}/api/documents?${new URLSearchParams({ conversationId: id, name: "letter.txt" })}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: content,
+    },
+  );
+  assert.equal(upload.status, 200);
+  const document = (await upload.json()) as { id: string; name: string };
+  const message = {
+    ...question(`Explain this letter: ${document.name}`),
+    metadata: { documentId: document.id },
+  };
+  const response = await post({ id, messages: [message] });
+  assert.equal(response.status, 200);
+  await response.text();
+  const reload = await fetch(`${base}/api/conversations/${id}`);
+  const saved = (await reload.json()) as { messages: UIMessage[] };
+  assert.deepEqual(saved.messages[0].metadata, { documentId: document.id });
+  assert.ok(textOf(saved.messages[1]).includes("Demo mode cannot explain"));
+  const { loadDocument } = await import("./db");
+  assert.deepEqual(await loadDocument(document.id, id), {
+    name: "letter.txt",
+    content,
+  });
+  const followup = await post({
+    id,
+    messages: [...saved.messages, question("When is it due?")],
+  });
+  assert.equal(followup.status, 200);
+  await followup.text();
+  const other = testId();
+  assert.equal((await post({ id: other, messages: [message] })).status, 400);
+  assert.equal(await loadConversation(other), undefined);
+  assert.equal(
+    (
+      await post({
+        id: other,
+        messages: [{ ...message, metadata: { documentId: randomUUID() } }],
+      })
+    ).status,
+    400,
+  );
+});
+
+test("upload endpoint rejects unsupported files and invalid conversations", async () => {
+  const id = testId();
+  for (const [conversationId, name, body] of [
+    [id, "letter.png", "image"],
+    ["invalid", "letter.txt", "hello"],
+    [id, "letter.txt", ""],
+  ]) {
+    const response = await fetch(
+      `${base}/api/documents?${new URLSearchParams({ conversationId, name })}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body,
+      },
+    );
+    assert.equal(response.status, 400);
+  }
+});
+
+test("server verification matches sample text, survives reload, and ignores client verdicts", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const id = testId();
+  for (const [name, expected] of [
+    ["sample-letter-with-code.pdf", "matched"],
+    ["sample-letter-without-code.pdf", "missing"],
+  ]) {
+    const upload = await fetch(
+      `${base}/api/documents?${new URLSearchParams({ conversationId: id, name })}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: await readFile(new URL(`./fixtures/${name}`, import.meta.url)),
+      },
+    );
+    assert.equal(upload.status, 200);
+    const data = (await upload.json()) as {
+      id: string;
+      verification: { status: string };
+    };
+    assert.equal(data.verification.status, expected);
+    const response = await post({
+      id,
+      messages: [
+        {
+          ...question(`Explain this letter: ${name}`),
+          metadata: {
+            documentId: data.id,
+            verification: { status: "matched" },
+          },
+        },
+      ],
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+    const saved = await loadConversation(id);
+    assert.deepEqual(saved?.[0].metadata, { documentId: data.id });
+    const check = await fetch(
+      `${base}/api/documents/${data.id}/verification?conversationId=${id}`,
+    );
+    assert.equal(check.status, 200);
+    assert.equal(((await check.json()) as { status: string }).status, expected);
+    const other = await fetch(
+      `${base}/api/documents/${data.id}/verification?conversationId=${testId()}`,
+    );
+    assert.equal(other.status, 404);
+  }
+  assert.equal(
+    (
+      await fetch(
+        `${base}/api/documents/invalid/verification?conversationId=${id}`,
+      )
+    ).status,
+    400,
+  );
 });

@@ -16,8 +16,17 @@ import {
   systemPrompt,
   textOf,
 } from "./chat";
-import { loadConversation, pool, saveConversation } from "./db";
+import {
+  loadConversation,
+  loadDocument,
+  pool,
+  saveConversation,
+  saveDocument,
+} from "./db";
+import { DocumentError, extractDocument, letterPrompt } from "./documents";
 import { accessExpired, demoMode, getModel, modelName } from "./model";
+
+import { verifyLetter } from "./verification";
 
 export const app = express();
 const activeChats = new Set<string>();
@@ -28,7 +37,48 @@ const streamError = (error: unknown) =>
       ? "Could not complete the answer through BOI staging. Check the server session and connection, then retry."
       : "Could not complete the answer. Check your AI key, model access and connection, then retry.";
 app.disable("x-powered-by");
+app.post(
+  "/api/documents",
+  express.raw({ type: "application/octet-stream", limit: "5mb" }),
+  async (req, res) => {
+    const parsed = z
+      .object({
+        conversationId: z.uuid(),
+        name: z.string().trim().min(1).max(255),
+      })
+      .safeParse(req.query);
+    if (!parsed.success || !Buffer.isBuffer(req.body))
+      return res
+        .status(400)
+        .json({ error: "Choose a file and a valid conversation." });
+    try {
+      const { conversationId, name } = parsed.data;
+      const content = await extractDocument(name, req.body);
+      const id = await saveDocument(conversationId, name, content);
+      return res.json({ id, name, verification: verifyLetter(content) });
+    } catch (error) {
+      if (error instanceof DocumentError)
+        return res.status(400).json({ error: error.message });
+      throw error;
+    }
+  },
+);
 app.use(express.json({ limit: "512kb" }));
+
+app.get("/api/documents/:id/verification", async (req, res) => {
+  const id = z.uuid().safeParse(req.params.id);
+  const conversationId = z.uuid().safeParse(req.query.conversationId);
+  if (!id.success || !conversationId.success)
+    return res
+      .status(400)
+      .json({ error: "Invalid document or conversation ID." });
+  const document = await loadDocument(id.data, conversationId.data);
+  if (!document)
+    return res
+      .status(404)
+      .json({ error: "Letter not found in this conversation." });
+  return res.json(verifyLetter(document.content));
+});
 
 app.get("/api/health", async (_req, res) => {
   await pool.query("SELECT 1");
@@ -109,15 +159,46 @@ app.post("/api/chat", async (req, res) => {
       return res
         .status(400)
         .json({ error: "That answer is not saved yet. Please try again." });
+    const groundedMessages: UIMessage[] = [];
+    let documentCharacters = 0;
+    for (const message of messages) {
+      const documentId = message.metadata?.documentId;
+      if (!documentId) {
+        groundedMessages.push(message);
+        continue;
+      }
+      if (message.role !== "user")
+        return res
+          .status(400)
+          .json({ error: "Only user messages can attach a letter." });
+      const document = await loadDocument(documentId, id);
+      if (!document)
+        return res.status(400).json({
+          error:
+            "This letter is not available in this conversation. Please upload it again.",
+        });
+      documentCharacters += document.content.length;
+      if (documentCharacters > 60000)
+        return res.status(400).json({
+          error:
+            "There are too many letters in this conversation. Start a new chat to explain another letter.",
+        });
+      groundedMessages.push({
+        ...message,
+        parts: [
+          { type: "text", text: letterPrompt(document.name, document.content) },
+        ],
+      });
+    }
     const modelMessages: UIMessage[] = source
       ? [
-          ...messages.slice(0, -1),
+          ...groundedMessages.slice(0, -1),
           {
             ...last,
             parts: [{ type: "text", text: simplificationPrompt(source) }],
           },
         ]
-      : messages;
+      : groundedMessages;
     await saveConversation(id, messages);
     const stream = createUIMessageStream<UIMessage>({
       originalMessages: messages,
@@ -129,8 +210,10 @@ app.post("/api/chat", async (req, res) => {
           const textId = randomUUID();
           writer.write({ type: "start" });
           writer.write({ type: "text-start", id: textId });
-          for (const token of demoAnswer(Boolean(source)).match(/\S+\s*/g) ||
-            []) {
+          const answer = documentCharacters
+            ? "**Your letter is ready.**\n\nDemo mode cannot explain the contents of your letter. Connect the AI service, then retry for a plain-language explanation of its key details and any actions it asks you to take."
+            : demoAnswer(Boolean(source));
+          for (const token of answer.match(/\S+\s*/g) || []) {
             if (controller.signal.aborted) break;
             writer.write({ type: "text-delta", id: textId, delta: token });
             await new Promise((resolve) => setTimeout(resolve, 18));
@@ -189,7 +272,7 @@ app.use(((error, _req, res, _next) => {
     res.status(status).json({
       error:
         status === 413
-          ? "Message is too large."
+          ? "File or message is too large. Letters must be under 5 MB."
           : status === 400
             ? "Invalid request."
             : error instanceof BackendError

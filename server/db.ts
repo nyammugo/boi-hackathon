@@ -38,3 +38,27 @@ export async function loadConversation(
   );
   return result.rows[0]?.messages;
 }
+
+export async function saveDocument(
+  conversationId: string,
+  name: string,
+  content: string,
+) {
+  const id = crypto.randomUUID();
+  await pool.query(
+    "INSERT INTO documents (id, name, content, metadata) VALUES ($1, $2, $3, $4::jsonb)",
+    [id, name, content, JSON.stringify({ conversationId })],
+  );
+  return id;
+}
+
+export async function loadDocument(
+  id: string,
+  conversationId: string,
+): Promise<{ name: string; content: string } | undefined> {
+  const result = await pool.query(
+    "SELECT name, content FROM documents WHERE id = $1 AND metadata->>'conversationId' = $2",
+    [id, conversationId],
+  );
+  return result.rows[0];
+}

@@ -13,11 +13,13 @@ import {
   Plus,
   Sparkles,
   Square,
+  Volume2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { MessageContent, type SourceFile } from "./MessageContent";
+import { canReadAloud, readAloud } from "./readAloud";
 
 type Conversation = { id: string; title: string; updated_at: string };
 type Health = {
@@ -29,22 +31,25 @@ type Health = {
 const suggestions = [
   {
     icon: BookOpen,
-    title: "Understand the essentials",
     text: "Explain compound interest with a simple example.",
   },
   {
     icon: MessageCircle,
-    title: "Decode the terminology",
     text: "What do risk, return and diversification mean in plain English?",
   },
   {
     icon: Sparkles,
-    title: "See the bigger picture",
     text: "What is the difference between saving and investing?",
   },
 ];
 
-export function App() {
+export function App({
+  embedded = false,
+  active = true,
+}: {
+  embedded?: boolean;
+  active?: boolean;
+}) {
   const [conversation, setConversation] = useState<{
     id: string;
     messages: UIMessage[];
@@ -121,7 +126,7 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${embedded ? "is-embedded" : ""}`}>
       <header className="masthead">
         <a className="brand" href="/" aria-label="Plainly home">
           <span className="brand-mark">
@@ -134,7 +139,6 @@ export function App() {
         <div className="masthead-context">
           Bank of Ireland <span>Hackathon</span>
         </div>
-        <span className="prototype-label">PROTOTYPE</span>
       </header>
       {sidebarOpen && (
         <button
@@ -153,7 +157,6 @@ export function App() {
         >
           <X size={18} />
         </button>
-        <div className="workspace-heading">A clearer conversation.</div>
         <button
           type="button"
           className="new-chat"
@@ -162,19 +165,12 @@ export function App() {
         >
           <Plus size={18} /> New conversation <ArrowRight size={17} />
         </button>
-        <div className="sidebar-label">
-          RECENT CONVERSATIONS{" "}
-          <span>{history.length.toString().padStart(2, "0")}</span>
-        </div>
+        <div className="sidebar-label">Conversations</div>
         <nav className="history" aria-label="Conversations">
           {history.length === 0 ? (
             <div className="history-empty">
               <MessageCircle size={19} />
-              <p>
-                Your next question starts here.
-                <br />
-                We’ll save the conversation for you.
-              </p>
+              <p>No conversations yet.</p>
             </div>
           ) : (
             history.map((item) => (
@@ -192,32 +188,13 @@ export function App() {
             ))
           )}
         </nav>
-        <div className="knowledge-card">
-          <div className="knowledge-icon">
-            <BookOpen size={19} />
-          </div>
-          <h3>
-            {health?.backend
-              ? "Your knowledge, closer."
-              : "Room for your documents."}
-          </h3>
-          <p>
-            {health?.backend
-              ? health.backend.collections.length
-                ? `${health.backend.documentCount} documents in ${health.backend.collections.length} selected collections. Answers use BOI staging’s sources.`
-                : "Your chat is connected. Document collections haven’t been selected yet."
-              : "Bring your documents into the conversation."}
-          </p>
-          <span className="coming-soon">
-            {health?.backend ? "BOI WORKSPACE CONNECTED" : "COMING NEXT"}
+        <div className="source-summary">
+          <BookOpen size={16} />
+          <span>
+            {health?.backend?.documentCount
+              ? `${health.backend.documentCount} documents connected`
+              : "No documents selected"}
           </span>
-        </div>
-        <div className="sidebar-footer">
-          <span className="avatar">Y</span>
-          <div>
-            <strong>Your workspace</strong>
-            <span>Your conversations, in one place</span>
-          </div>
         </div>
       </aside>
       <main className="main-panel">
@@ -233,9 +210,7 @@ export function App() {
             >
               <Menu size={20} />
             </button>
-            <span>Your workspace</span>
-            <ChevronRight size={14} />
-            <strong>Let’s talk</strong>
+            <strong>Chat</strong>
           </div>
           <span className="status">
             <i className={health ? "connected" : ""} />
@@ -245,6 +220,16 @@ export function App() {
                 : "Sonnet 5"
               : "Connecting"}
           </span>
+          {embedded && (
+            <button
+              type="button"
+              className="widget-new-chat"
+              onClick={newConversation}
+              disabled={busy || loading}
+            >
+              <Plus size={14} /> New chat
+            </button>
+          )}
         </header>
         {notice && (
           <div className="notice" role="alert">
@@ -272,6 +257,7 @@ export function App() {
             sources={sources}
             onSaved={refresh}
             onBusy={setBusy}
+            active={active}
           />
         )}
       </main>
@@ -285,16 +271,21 @@ function Chat({
   initialMessages,
   onSaved,
   onBusy,
+  active,
 }: {
   id: string;
   initialMessages: UIMessage[];
   sources: SourceFile[];
   onSaved: () => Promise<void>;
   onBusy: (busy: boolean) => void;
+  active: boolean;
 }) {
   const [input, setInput] = useState("");
   const [copiedId, setCopiedId] = useState("");
   const [copyError, setCopyError] = useState("");
+  const [readingId, setReadingId] = useState("");
+  const [readError, setReadError] = useState("");
+  const cancelReading = useRef<(() => void) | null>(null);
   const [showScroll, setShowScroll] = useState(false);
   const scrollArea = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -327,16 +318,22 @@ function Chat({
     });
   const busy = status === "submitted" || status === "streaming";
 
+  useEffect(() => () => cancelReading.current?.(), []);
+  useEffect(() => {
+    if (!active) cancelReading.current?.();
+  }, [active]);
+
   useEffect(() => {
     onBusy(busy);
   }, [busy, onBusy]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Finishing a stream adds answer controls; scroll again when busy changes so they stay visible.
   useEffect(() => {
     if (messages.length && nearBottom.current)
       scrollArea.current?.scrollTo({
         top: scrollArea.current.scrollHeight,
         behavior: "instant",
       });
-  }, [messages]);
+  }, [messages, busy]);
   useEffect(() => {
     if (textarea.current) {
       textarea.current.style.height = "auto";
@@ -348,9 +345,10 @@ function Chat({
 
   function send(text: string, sourceId?: string) {
     if (!text.trim() || busy) return;
+    cancelReading.current?.();
     clearError();
     nearBottom.current = true;
-    setInput("");
+    if (!sourceId) setInput("");
     void sendMessage({
       text: text.trim(),
       ...(sourceId ? { metadata: { simplifyMessageId: sourceId } } : {}),
@@ -375,10 +373,27 @@ function Chat({
     }
   }
 
+  function toggleReading(messageId: string, button: HTMLButtonElement) {
+    const wasReading = readingId === messageId;
+    cancelReading.current?.();
+    setReadError("");
+    if (wasReading) return;
+    const content = button
+      .closest(".message")
+      ?.querySelector<HTMLElement>(".message-content");
+    if (!content || !canReadAloud()) return;
+    setReadingId(messageId);
+    cancelReading.current = readAloud(content, (error) => {
+      setReadingId("");
+      setReadError(error ?? "");
+      cancelReading.current = null;
+    });
+  }
+
   return (
     <>
       <div
-        className="conversation-scroll"
+        className={`conversation-scroll ${messages.length === 0 ? "is-empty" : ""}`}
         ref={scrollArea}
         onScroll={() => {
           const node = scrollArea.current;
@@ -393,18 +408,7 @@ function Chat({
           <div className="welcome">
             <div className="welcome-hero">
               <div className="welcome-copy">
-                <div className="welcome-eyebrow">
-                  <span /> A LITTLE UNDERSTANDING GOES A LONG WAY
-                </div>
-                <h1>
-                  Your questions.
-                  <br />
-                  <span>Made clear.</span>
-                </h1>
-                <p className="welcome-description">
-                  From the big picture to the small print. Ask a question,
-                  explore an idea, and find an answer that makes sense to you.
-                </p>
+                <h1>How can I help?</h1>
               </div>
               <div className="clarity-art" aria-hidden="true">
                 <div className="art-orbit" />
@@ -429,43 +433,25 @@ function Chat({
                 </div>
               </div>
             </div>
-            <div className="suggestions-heading">
-              <h2>A good place to start</h2>
-              <span>Pick a question or ask your own</span>
-            </div>
             <div className="suggestions">
-              {suggestions.map(({ icon: Icon, title, text }) => (
+              {suggestions.map(({ icon: Icon, text }) => (
                 <button
                   type="button"
-                  key={title}
+                  key={text}
                   className="suggestion"
                   onClick={() => send(text)}
                 >
                   <span className="suggestion-icon">
                     <Icon size={20} strokeWidth={1.6} />
                   </span>
-                  <span className="suggestion-copy">
-                    <strong>{title}</strong>
-                    <span className="suggestion-text">{text}</span>
-                  </span>
+                  <span className="suggestion-text">{text}</span>
                   <ArrowRight size={17} className="suggestion-arrow" />
                 </button>
               ))}
             </div>
-            <div className="simplify-hint">
-              <span className="mini-simplify">
-                <Sparkles size={13} /> Simplify
-              </span>
-              <span>
-                A bit too much detail? Select Simplify below any answer.
-              </span>
-            </div>
           </div>
         ) : (
           <div className="messages">
-            <div className="conversation-start">
-              Your questions. A little clearer, one answer at a time.
-            </div>
             {messages.map((message, index) => (
               <article key={message.id} className={`message ${message.role}`}>
                 <div className="message-label">
@@ -513,6 +499,29 @@ function Chat({
                       </button>
                       <button
                         type="button"
+                        className="read-aloud-button"
+                        disabled={!canReadAloud()}
+                        title={
+                          canReadAloud()
+                            ? undefined
+                            : "Read aloud is not available in this browser."
+                        }
+                        aria-pressed={readingId === message.id}
+                        onClick={(event) =>
+                          toggleReading(message.id, event.currentTarget)
+                        }
+                      >
+                        {readingId === message.id ? (
+                          <Square size={14} />
+                        ) : (
+                          <Volume2 size={15} />
+                        )}
+                        {readingId === message.id
+                          ? "Stop reading"
+                          : "Read aloud"}
+                      </button>
+                      <button
+                        type="button"
                         className="copy-button"
                         aria-label={
                           copiedId === message.id
@@ -548,7 +557,9 @@ function Chat({
           </div>
         )}
       </div>
-      <div className="composer-area">
+      <div
+        className={`composer-area ${messages.length === 0 ? "is-empty" : ""}`}
+      >
         {showScroll && (
           <button
             type="button"
@@ -572,6 +583,7 @@ function Chat({
               type="button"
               disabled={busy}
               onClick={() => {
+                cancelReading.current?.();
                 clearError();
                 void regenerate();
               }}
@@ -593,6 +605,11 @@ function Chat({
             {copyError}
           </p>
         )}
+        {readError && (
+          <p className="copy-error" role="status">
+            {readError}
+          </p>
+        )}
         <form
           className={`composer ${busy ? "is-busy" : ""}`}
           onSubmit={(event) => {
@@ -606,7 +623,7 @@ function Chat({
           <textarea
             ref={textarea}
             id="message-input"
-            placeholder="What would you like to understand?"
+            placeholder="Ask a question…"
             value={input}
             onChange={(event) => setInput(event.target.value)}
             rows={1}
@@ -623,9 +640,6 @@ function Chat({
             }}
           />
           <div className="composer-bottom">
-            <span>
-              <MessageCircle size={14} /> Ask in your own words
-            </span>
             {busy ? (
               <button
                 type="button"
@@ -648,8 +662,7 @@ function Chat({
           </div>
         </form>
         <div className="composer-caption">
-          <span>A little more understanding.</span>
-          <span>AI can make mistakes. Check important details.</span>
+          AI can make mistakes. Check important details.
         </div>
       </div>
     </>

@@ -7,6 +7,7 @@ import {
   uiMessageChunkSchema,
 } from "ai";
 import { z } from "zod";
+import { plainLanguagePrompt } from "./chat";
 import { accessExpired } from "./model";
 
 const sessionSchema = z.object({
@@ -197,8 +198,20 @@ export class BuildpromptBackend {
   ): Promise<ReadableStream<UIMessageChunk>> {
     const response = await this.request("/api/chat", {
       method: "POST",
+      // Staging owns its system prompt and accepts no custom system field.
+      // Add writing guidance to this request only, leaving saved messages intact.
       body: JSON.stringify({
-        messages,
+        messages: messages.map((message, index) =>
+          index === messages.length - 1 && message.role === "user"
+            ? {
+                ...message,
+                parts: [
+                  ...message.parts,
+                  { type: "text", text: plainLanguagePrompt },
+                ],
+              }
+            : message,
+        ),
         ...(this.collectionIds
           ? { sourceSelection: { collections: this.collectionIds, files: [] } }
           : {}),

@@ -18,6 +18,10 @@ npm run dev
 
 Open **http://localhost:5173**. The API runs at **http://127.0.0.1:3001**. If Vite selects another port, use the URL printed in its output. Keep the dev process running while using the app.
 
+Open **http://localhost:5173/website** for the Bank of Ireland homepage recreation with a floating **Let’s chat** button. It opens the same live chatbot in a compact window, including Simplify, Stop, Retry and saved conversations. Minimising keeps the chat mounted, so a reply can finish in the background. **Expand** animates the same chat into the full workspace over the website, including conversation history. **Minimise** animates it back into the corner window. Drafts and streaming replies stay intact during both transitions. The website is inactive while expanded; keyboard focus stays inside the chat, and reduced-motion preferences disable the resize animation. Reloading a conversation URL reopens the chat window. On mobile the window fits the screen. Press Escape to return from the expanded view to the small window, or from the small window to the launcher.
+
+The `/website` page is a hackathon recreation. Banking and login links open the official website in a new tab; this app collects no banking login details. Public homepage images are stored in `public/boi`, with their original URLs in that directory's README. The page reuses `App` in embedded mode, with styles scoped in `src/website.css`, and uses the existing server API and local database.
+
 **The agent should complete setup autonomously:**
 
 1. Run `npm ci`; the lockfile is committed.

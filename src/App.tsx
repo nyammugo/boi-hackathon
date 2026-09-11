@@ -8,17 +8,20 @@ import {
   Check,
   ChevronRight,
   Copy,
+  FileText,
   Menu,
   MessageCircle,
   Plus,
   Sparkles,
   Square,
+  Volume2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
 import { api } from "./api";
 import { CallControls } from "./CallControls";
+import { MessageContent, type SourceFile } from "./MessageContent";
+import { readAloud } from "./readAloud";
 import { useVoiceCall } from "./useVoiceCall";
 import { applyVoiceMessage } from "./voice";
 
@@ -46,10 +49,10 @@ const suggestions = [
 
 export function App({
   embedded = false,
-  visible = true,
+  active = true,
 }: {
   embedded?: boolean;
-  visible?: boolean;
+  active?: boolean;
 }) {
   const [conversation, setConversation] = useState<{
     id: string;
@@ -57,6 +60,7 @@ export function App({
   }>(() => ({ id: crypto.randomUUID(), messages: [] }));
   const [history, setHistory] = useState<Conversation[]>([]);
   const [health, setHealth] = useState<Health>();
+  const [sources, setSources] = useState<SourceFile[]>([]);
   const [notice, setNotice] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -65,12 +69,14 @@ export function App({
 
   const refresh = useCallback(async () => {
     try {
-      const [nextHistory, nextHealth] = await Promise.all([
+      const [nextHistory, nextHealth, nextSources] = await Promise.all([
         api<Conversation[]>("/api/conversations"),
         api<Health>("/api/health"),
+        api<SourceFile[]>("/api/sources"),
       ]);
       setHistory(nextHistory);
       setHealth(nextHealth);
+      setSources(nextSources);
       setNotice("");
     } catch (error) {
       setNotice(
@@ -192,7 +198,7 @@ export function App({
           <span>
             {health?.backend?.documentCount
               ? `${health.backend.documentCount} documents connected`
-              : "No documents selected"}
+              : "No reference documents selected"}
           </span>
         </div>
       </aside>
@@ -255,10 +261,11 @@ export function App({
             key={conversation.id}
             id={conversation.id}
             initialMessages={conversation.messages}
+            sources={sources}
             onSaved={refresh}
             onBusy={setBusy}
             onCalling={setCalling}
-            visible={visible}
+            active={active}
           />
         )}
       </main>
@@ -267,23 +274,36 @@ export function App({
 }
 
 function Chat({
+  sources,
   id,
   initialMessages,
   onSaved,
   onBusy,
   onCalling,
-  visible,
+  active,
 }: {
   id: string;
   initialMessages: UIMessage[];
+  sources: SourceFile[];
   onSaved: () => Promise<void>;
   onBusy: (busy: boolean) => void;
   onCalling: (calling: boolean) => void;
-  visible: boolean;
+  active: boolean;
 }) {
   const [input, setInput] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const uploadController = useRef<AbortController | null>(null);
+  useEffect(() => () => uploadController.current?.abort(), []);
   const [copiedId, setCopiedId] = useState("");
   const [copyError, setCopyError] = useState("");
+  const [readingId, setReadingId] = useState("");
+  const [readError, setReadError] = useState("");
+  const [readingState, setReadingState] = useState<
+    "loading" | "ready" | "playing"
+  >("loading");
+  const readingSession = useRef<ReturnType<typeof readAloud> | null>(null);
   const [showScroll, setShowScroll] = useState(false);
   const scrollArea = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -327,7 +347,12 @@ function Chat({
       void onSaved();
     },
   });
-  const busy = status === "submitted" || status === "streaming";
+  const generating = status === "submitted" || status === "streaming";
+  const busy = generating || uploading;
+  useEffect(() => () => readingSession.current?.stop(), []);
+  useEffect(() => {
+    if (!active) readingSession.current?.stop();
+  }, [active]);
 
   useEffect(() => {
     currentMessages.current = messages;
@@ -362,7 +387,7 @@ function Chat({
   }
 
   const voice = useVoiceCall({
-    visible,
+    visible: active,
     onMessage: (message) => {
       const next = applyVoiceMessage(currentMessages.current, message);
       currentMessages.current = next;
@@ -402,6 +427,7 @@ function Chat({
   function send(text: string, sourceId?: string) {
     if (!text.trim() || busy || voice.active || savingVoice || saveError)
       return;
+    readingSession.current?.stop();
     clearError();
     nearBottom.current = true;
     if (!sourceId) setInput("");
@@ -410,6 +436,65 @@ function Chat({
       ...(sourceId ? { metadata: { simplifyMessageId: sourceId } } : {}),
     });
     textarea.current?.focus();
+  }
+
+  async function explainLetter(file: File) {
+    if (
+      busy ||
+      voice.active ||
+      savingVoice ||
+      saveError ||
+      uploadController.current
+    )
+      return;
+    setUploadError("");
+    if (!/\.(pdf|docx|txt)$/i.test(file.name)) {
+      setUploadError("Choose a PDF, Word (.docx), or text (.txt) file.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024 || file.size === 0) {
+      setUploadError(
+        file.size === 0
+          ? "This file is empty. Choose another letter."
+          : "Choose a file under 5 MB.",
+      );
+      return;
+    }
+    const controller = new AbortController();
+    uploadController.current = controller;
+    setUploading(true);
+    clearError();
+    try {
+      const query = new URLSearchParams({
+        conversationId: id,
+        name: file.name,
+      });
+      const response = await fetch(`/api/documents?${query}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+        signal: controller.signal,
+      });
+      const data = await response.json();
+      if (!response.ok)
+        throw new Error(data.error || "Could not read this letter. Try again.");
+      readingSession.current?.stop();
+      nearBottom.current = true;
+      void sendMessage({
+        text: `Explain this letter: ${data.name}`,
+        metadata: { documentId: data.id },
+      });
+    } catch (error) {
+      if (!controller.signal.aborted)
+        setUploadError(
+          error instanceof Error
+            ? error.message
+            : "Could not upload the letter. Try again.",
+        );
+    } finally {
+      uploadController.current = null;
+      setUploading(false);
+    }
   }
 
   async function copy(message: UIMessage) {
@@ -429,8 +514,48 @@ function Chat({
     }
   }
 
+  function toggleReading(messageId: string, button: HTMLButtonElement) {
+    if (voice.active) return;
+    const wasReading = readingId === messageId;
+    if (wasReading && readingState === "ready") {
+      readingSession.current?.play();
+      return;
+    }
+    readingSession.current?.stop();
+    setReadError("");
+    if (wasReading) return;
+    const content = button
+      .closest(".message")
+      ?.querySelector<HTMLElement>(".message-content");
+    if (!content) return;
+    setReadingId(messageId);
+    readingSession.current = readAloud(
+      content,
+      (error) => {
+        setReadingId("");
+        setReadError(error ?? "");
+        readingSession.current = null;
+      },
+      setReadingState,
+    );
+  }
+
   return (
     <>
+      <input
+        ref={fileInput}
+        type="file"
+        className="sr-only"
+        tabIndex={-1}
+        aria-label="Choose a letter"
+        accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+        disabled={busy}
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (file) void explainLetter(file);
+        }}
+      />
       <div
         className={`conversation-scroll ${messages.length === 0 ? "is-empty" : ""}`}
         ref={scrollArea}
@@ -480,11 +605,29 @@ function Chat({
             </div>
             {!voice.active && (
               <div className="suggestions">
+                <button
+                  type="button"
+                  className="suggestion"
+                  disabled={busy}
+                  onClick={() => fileInput.current?.click()}
+                >
+                  <span className="suggestion-icon">
+                    <FileText size={20} strokeWidth={1.6} />
+                  </span>
+                  <span className="suggestion-text">
+                    <strong>Explain this letter</strong>
+                    <span className="letter-hint">
+                      Choose a PDF, Word or text file. I’ll explain it simply.
+                    </span>
+                  </span>
+                  <ArrowRight size={17} className="suggestion-arrow" />
+                </button>
                 {suggestions.map(({ icon: Icon, text }) => (
                   <button
                     type="button"
                     key={text}
                     className="suggestion"
+                    disabled={busy}
                     onClick={() => send(text)}
                   >
                     <span className="suggestion-icon">
@@ -518,13 +661,27 @@ function Chat({
                   )}
                 </div>
                 <div className="message-content">
-                  <Markdown>
-                    {message.parts
+                  <MessageContent
+                    messageId={message.id}
+                    streaming={busy && index === messages.length - 1}
+                    sources={sources}
+                    text={message.parts
                       .filter((part) => part.type === "text")
                       .map((part) => part.text)
                       .join("\n")}
-                  </Markdown>
+                  />
                 </div>
+                {message.role === "user" &&
+                  typeof (
+                    message.metadata as { documentId?: unknown } | undefined
+                  )?.documentId === "string" && (
+                    <LetterVerification
+                      documentId={
+                        (message.metadata as { documentId: string }).documentId
+                      }
+                      conversationId={id}
+                    />
+                  )}
                 {message.role === "assistant" &&
                   !(busy && index === messages.length - 1) &&
                   !error && (
@@ -550,6 +707,29 @@ function Chat({
                       </button>
                       <button
                         type="button"
+                        className="read-aloud-button"
+                        disabled={voice.active}
+                        aria-pressed={readingId === message.id}
+                        onClick={(event) =>
+                          toggleReading(message.id, event.currentTarget)
+                        }
+                      >
+                        {readingId === message.id &&
+                        readingState !== "ready" ? (
+                          <Square size={14} />
+                        ) : (
+                          <Volume2 size={15} />
+                        )}
+                        {readingId === message.id
+                          ? readingState === "loading"
+                            ? "Cancel loading"
+                            : readingState === "ready"
+                              ? "Play audio"
+                              : "Stop reading"
+                          : "Read aloud"}
+                      </button>
+                      <button
+                        type="button"
                         className="copy-button"
                         aria-label={
                           copiedId === message.id
@@ -568,7 +748,7 @@ function Chat({
                   )}
               </article>
             ))}
-            {busy &&
+            {generating &&
               (status === "submitted" ||
                 !messages
                   .at(-1)
@@ -613,6 +793,7 @@ function Chat({
                 busy || voice.active || savingVoice || Boolean(saveError)
               }
               onClick={() => {
+                readingSession.current?.stop();
                 clearError();
                 void regenerate();
               }}
@@ -629,9 +810,32 @@ function Chat({
             </button>
           </div>
         )}
+        {(uploading || uploadError) && (
+          <div
+            className="chat-error letter-status"
+            role={uploadError ? "alert" : "status"}
+          >
+            <FileText size={17} aria-hidden="true" />
+            <span>{uploading ? "Reading your letter…" : uploadError}</span>
+            <button
+              type="button"
+              onClick={() => {
+                if (uploading) uploadController.current?.abort();
+                else setUploadError("");
+              }}
+            >
+              {uploading ? "Cancel" : "Dismiss"}
+            </button>
+          </div>
+        )}
         {copyError && (
           <p className="copy-error" role="status">
             {copyError}
+          </p>
+        )}
+        {readError && (
+          <p className="copy-error" role="status">
+            {readError}
           </p>
         )}
         {saveError && (
@@ -654,6 +858,7 @@ function Chat({
           error={voice.error || voice.agent?.error || ""}
           onReconnect={() => void voice.refreshAgent()}
           onStart={() => {
+            readingSession.current?.stop();
             clearError();
             nearBottom.current = true;
             const context = messages.slice(-20).map((message) => ({
@@ -700,7 +905,16 @@ function Chat({
               }}
             />
             <div className="composer-bottom">
-              {busy ? (
+              <button
+                type="button"
+                className="letter-button"
+                disabled={busy || savingVoice || Boolean(saveError)}
+                onClick={() => fileInput.current?.click()}
+                title="PDF, Word (.docx) or text (.txt), up to 5 MB"
+              >
+                <FileText size={16} /> Explain this letter
+              </button>
+              {generating ? (
                 <button
                   type="button"
                   className="send-button"
@@ -713,7 +927,9 @@ function Chat({
                 <button
                   type="submit"
                   className="send-button"
-                  disabled={!input.trim() || savingVoice || Boolean(saveError)}
+                  disabled={
+                    busy || !input.trim() || savingVoice || Boolean(saveError)
+                  }
                   aria-label="Send message"
                 >
                   <ArrowUp size={20} />
@@ -733,5 +949,69 @@ function Chat({
         </div>
       </div>
     </>
+  );
+}
+
+function LetterVerification({
+  documentId,
+  conversationId,
+}: {
+  documentId: string;
+  conversationId: string;
+}) {
+  const [result, setResult] = useState<{
+    status: string;
+    title: string;
+    detail: string;
+  }>();
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The retry counter intentionally reruns this read-only request.
+  useEffect(() => {
+    let active = true;
+    setFailed(false);
+    setResult(undefined);
+    void api<{ status: string; title: string; detail: string }>(
+      `/api/documents/${encodeURIComponent(documentId)}/verification?${new URLSearchParams({ conversationId })}`,
+    )
+      .then((data) => {
+        if (active) setResult(data);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [documentId, conversationId, attempt]);
+  return (
+    <div
+      className={`letter-verification ${result?.status === "matched" ? "is-matched" : ""}`}
+      role="status"
+    >
+      <strong>
+        {failed
+          ? "Demo check unavailable"
+          : result?.title || "Checking demo record…"}
+      </strong>
+      <p>
+        {failed
+          ? "We could not check this letter. Its origin has not been verified."
+          : result?.detail ||
+            "Matching the footer code and letter text against the stored sample."}
+      </p>
+      {failed && (
+        <button
+          type="button"
+          className="letter-button"
+          onClick={() => setAttempt((value) => value + 1)}
+        >
+          Retry check
+        </button>
+      )}
+      <small>
+        Demo only · Checks extracted text, not images or bank signatures.
+      </small>
+    </div>
   );
 }

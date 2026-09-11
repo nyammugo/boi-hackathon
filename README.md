@@ -1,6 +1,10 @@
 # Plainly
 
-A small React chatbot that makes answers easier to understand. Ask a question, then click **Simplify** under any answer to get a plain-language version. The original stays in the conversation. Chats are saved in local Postgres and can be reopened from the sidebar.
+A small React chatbot that makes answers easier to understand. Ask a question, then click **Simplify** under any answer to get a plain-language version. The original stays in the conversation. Chats are saved in local Postgres and can be reopened from the sidebar. Choose **Explain this letter** to open a file picker and get a plain-language explanation of a PDF, Word (.docx), or text (.txt) letter, including important details and any requested actions.
+
+Click **Read aloud** under a completed answer to listen with ElevenLabs. The server sends the rendered answer text to ElevenLabs and returns audio with [word timing derived from character alignment](https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps). Highlighting follows the audio playback position. Older browsers without text-range highlighting highlight the current paragraph. **Cancel loading** cancels audio generation and **Stop reading** ends playback. If the browser requires another click to start audio, use **Play audio**. Choosing another answer, sending a message, opening another conversation, or hiding the chat also stops playback.
+
+Set `ELEVENLABS_API_KEY` in the ignored server `.env` file with **Text to Speech** permission, then restart the API. The default voice is Gareth (matching the Ireland B Demo 2 agent) with `eleven_flash_v2_5`; set `ELEVENLABS_VOICE_ID` to choose another voice. The key stays on the server. Audio is generated on demand and is not saved in the conversation. Missing or expired credentials, denied permissions, and usage limits produce a visible error.
 
 The app connects to **https://staging.boi.buildprompt.app** through a server-only session. No login, signup, or account setup is needed in the web app. BOI staging runs Claude Sonnet 5; conversations are saved in local Postgres.
 
@@ -18,7 +22,7 @@ npm run dev
 
 Open **http://localhost:5173**. The API runs at **http://127.0.0.1:3001**. If Vite selects another port, use the URL printed in its output. Keep the dev process running while using the app.
 
-Open **http://localhost:5173/website** for the Bank of Ireland homepage recreation with a floating **Let’s chat** button. It opens the same live chatbot in a compact window, including Simplify, Stop, Retry and saved conversations. Minimising keeps the chat mounted, so a reply can finish in the background. **Expand** animates the same chat into the full workspace over the website, including conversation history. **Minimise** animates it back into the corner window. Drafts and streaming replies stay intact during both transitions. The website is inactive while expanded; keyboard focus stays inside the chat, and reduced-motion preferences disable the resize animation. Reloading a conversation URL reopens the chat window. On mobile the window fits the screen. Press Escape to return from the expanded view to the small window, or from the small window to the launcher.
+Open **http://localhost:5173/website** for the Bank of Ireland homepage recreation with a floating **Let’s chat** button. It opens the same live chatbot in a compact window, including Explain this letter, Simplify, Stop, Retry and saved conversations. Minimising keeps the chat mounted, so a reply can finish in the background. **Expand** animates the same chat into the full workspace over the website, including conversation history. **Minimise** animates it back into the corner window. Drafts and streaming replies stay intact during both transitions. The website is inactive while expanded; keyboard focus stays inside the chat, and reduced-motion preferences disable the resize animation. Reloading a conversation URL reopens the chat window. On mobile the window fits the screen. Press Escape to return from the expanded view to the small window, or from the small window to the launcher.
 
 The `/website` page is a hackathon recreation. Banking and login links open the official website in a new tab; this app collects no banking login details. Public homepage images are stored in `public/boi`, with their original URLs in that directory's README. The page reuses `App` in embedded mode, with styles scoped in `src/website.css`, and uses the existing server API and local database.
 
@@ -67,7 +71,8 @@ If the database is still starting, rerun `npm run db:migrate` after `docker comp
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `DATABASE_URL` | Local Postgres connection; setup detects/writes this if missing | See `.env.example` for Docker |
-| `BUILDPROMPT_URL` | Use BOI staging chat, tools and source defaults through the backend | Set by backend setup |
+| `BUILDPROMPT_URL` | Use BOI staging chat, tools and sources through the backend | Set by backend setup |
+| `BUILDPROMPT_COLLECTION_IDS` | Server-only comma-separated collection ID override; no user dropdown | Five investment collections for BOI staging; backend defaults elsewhere |
 | `AZURE_AI_ENDPOINT` | Foundry resource URL, without `/anthropic/v1` | Missing configuration enables demo mode |
 | `AZURE_AI_DEPLOYMENT` | Sonnet 5 deployment name | `claude-sonnet-5` |
 | `AZURE_TENANT_ID` | Tenant for the dedicated application credential | Set by Foundry setup |
@@ -122,7 +127,29 @@ If Key Vault denies access and temporary grants have been authorized, an agent w
 
 The server forwards its cookie only to the configured backend, follows no redirects, and saves rotated cookies on authenticated responses. Nothing is placed in browser cookies or client JavaScript. It stops using the session at the existing Foundry credential deadline, or 24 hours after setup when no deadline exists. **This is a local deadline, not a change to WorkOS's session lifetime**; the staging identity remains until deleted. The retained user ID supports later cleanup via WorkOS. Fresh access requires an explicitly authorized new session.
 
-Chat uses staging's default source selection and model. It does not create a staging conversation thread: conversation history remains in the local database. The sidebar reports selected source counts. At initial verification staging had source collections but no default selection, so ordinary document search was inactive. Selecting sources and uploading your documents are next-pass work; the app does not change staging-wide source defaults.
+Chat uses staging's model and the five built-in investment collections, unless overridden by `BUILDPROMPT_COLLECTION_IDS`. Other backend environments use their default source selection. It does not create a staging conversation thread: conversation history remains in the local database. The sidebar reports selected source counts. At initial verification staging had source collections but no default selection, so ordinary document search was inactive. The server can select existing collections for every request; the app does not change staging-wide source defaults. Letter uploads are separate: their extracted text is included in the conversation sent to the model.
+
+### Investment demo sources
+
+The demo uses five fixed server-side collections on `https://staging.boi.buildprompt.app`: Emerald master terms, Emerald disclosures, the fictional range master catalogue, its risk/cost register, and reviewed New Ireland public documents (14 files). These collections are built into the adapter for BOI staging, so no additional configuration or source dropdown is needed. The equivalent optional override in the ignored `.env` is:
+
+```dotenv
+BUILDPROMPT_COLLECTION_IDS=35cb7d83-a92c-447f-953c-060a243d9062,15772165-59d3-4fa1-92bf-c7750d0363c9,c6efc7d7-bab8-43d7-8608-8df51115e1d0,a4f102aa-b2a8-4ea5-9569-628265e0807b,f215a321-d5fd-4134-86e1-69323799de16
+```
+
+The health endpoint and sidebar report the selected collections. Requests pass these IDs through BuildPrompt's existing `sourceSelection` contract. Other staging collections and shared defaults are unaffected. An unknown configured collection produces a health error.
+
+### In-chat citations
+
+Answers using BuildPrompt footnotes (`[^1]` plus `[^1]: filename | p. 2 | excerpt`) display numbered badges and a Sources section. Select a badge or source card to reveal its excerpt and page label. Open document reads the actual file through the server-only staging session. This also works for existing saved chats. Document names must match exactly one ready file in the preselected collections; otherwise the card shows that its document link is unavailable. The excerpt remains model-supplied text, not an independently verified quotation.
+
+The server lists selected files at `/api/sources` and restricts `/api/sources/:id` to that selection. Backend credentials stay on the server. Markdown tables and footnotes use `remark-gfm` with the existing React Markdown renderer. Citation rendering checks run with `npm run test:citations`.
+
+### In-chat charts
+
+BuildPrompt's `bp-chart` and `buildprompt-chart` blocks now render as responsive Recharts visuals, using the same six types as BuildPrompt: line, area, bar, pie, donut and scatter. A JSON code block is also rendered when it contains a valid chart specification. Titles, descriptions, labels and values come from the supplied chart data; hover shows values, and View chart data exposes an accessible table. Existing saved answers render without regeneration.
+
+Incomplete chart blocks show Preparing chart while streaming. Invalid or unsupported chart specifications show a fallback with the original data. Validation rejects missing values, invalid numeric cells and oversized series rather than silently discarding rows. Citations remain connected across charts. Run `npm run test:charts` for these cases.
 
 ### Direct Foundry setup with 24-hour access (optional)
 
@@ -163,8 +190,12 @@ npm run typecheck:server
 
 # Chat validation and simplification tests; no services or AI key required.
 npm run test:chat
+npm run test:documents
 npm run test:model
 npm run test:backend
+
+# Read-aloud playback timing and speech API tests; no provider calls or database required.
+npx tsx --test src/readAloud.test.ts server/speech.test.ts
 
 # API integration tests with canned streaming and real Postgres.
 # Requires setup first. Uses temporary UUID conversations and deletes only its own test rows.
@@ -185,7 +216,8 @@ server/chat.ts       Validation, assistant prompt, simplification prompt, demo r
 server/db.ts         Parameterized Postgres queries
 server/model.ts      Sonnet 5 on Foundry and credential-expiry enforcement
 server/backend.ts    BOI authenticated API adapter and session rotation
-server/schema.sql    Conversations and a table reserved for future documents
+server/documents.ts  Letter parsing, limits and plain-language explanation prompt
+server/schema.sql    Conversations and extracted letter text
 scripts/setup.mjs    Repeatable local database setup
 scripts/setup-foundry.mjs  Explicit provisioning of 24-hour Foundry credentials
 scripts/setup-backend.mjs  Dedicated staging identity and server-only session
@@ -198,8 +230,26 @@ Reference: [AI SDK chat and persistence](https://ai-sdk.dev/docs/ai-sdk-ui/chatb
 
 ## First-pass scope
 
-- Working streamed chat, Markdown answers, Stop, Retry, copy, saved conversation history, and Simplify on any completed answer.
+- Working streamed chat, Markdown answers, Stop, Retry, copy, saved conversation history, Simplify on any completed answer, and Explain this letter uploads.
 - Responsive interface with an explicit demo-mode label and useful error states.
-- BOI staging provides the model and its existing chat tools. Document search follows staging's default source selection. A local `documents` table is reserved for the next pass; local uploads, parsing and retrieval are not implemented. Direct Foundry mode has no document access.
+- BOI staging provides the model and its existing chat tools. Reference document search uses the five built-in investment demo collections on BOI staging; a server-side override is available. Letter uploads work in backend and direct Foundry modes: extracted text is stored locally and supplied to the model for the explanation and follow-up questions. Demo mode accepts files but explicitly explains that a live AI connection is required to interpret them.
 - This is a local, single-workspace hackathon app with no authentication. The server binds to loopback. All local users of this instance share its conversations. Add access control before exposing it beyond your machine.
 - The first pass caps requests at 100 messages, 20,000 characters per text part, and 512 KB total. Start a new conversation when you reach a limit. Conversation history shows the latest 50 chats.
+
+## Explain this letter
+
+The welcome screen and composer both open the native file picker. Selecting a file starts upload and explanation automatically, while preserving any typed draft. Upload progress, cancel, readable errors, and the existing Stop/Retry controls cover failures. The same flow works in the website widget and expanded chat.
+
+Supported files are PDF, Word (.docx), and UTF-8 text (.txt), up to 5 MB and 20,000 extracted characters; PDFs are limited to 30 pages. Files are read in memory by the server. The original file is not retained; extracted text and filename are stored in local Postgres, linked to the conversation. That text is sent to the configured AI service and remains available for follow-up questions after reload. Three maximum-length letters fit within the 60,000-character document context limit.
+
+This version extracts text; it does not perform OCR or interpret embedded pictures. Scanned PDFs, pages without extractable text, empty documents, and damaged or password-protected files show an error rather than an invented explanation. Use a document with selectable text or paste the letter into chat. Word extraction reads paragraph text, not images. The explanation prompt preserves amounts, deadlines, conditions and uncertainty, separates document contents from instructions, and only lists actions requested by the letter.
+
+`POST /api/documents?conversationId=<uuid>&name=<filename>` accepts the file as `application/octet-stream` and returns its ID. User message metadata carries that ID through the existing chat API. The server resolves documents only within their owning conversation before sending the text to the model. No staging-wide document collections are changed. Parser fixtures and tests live in `server/fixtures` and `server/documents.test.ts`; upload, conversation binding, persistence and follow-ups are covered in `server/app.test.ts`.
+
+### Demo letter verification
+
+Each uploaded letter gets a separate verification card. A deterministic server check compares its `Demo verification code:` line and a SHA-256 hash of its extracted text with a fixed sample record in `server/verification.ts`. Uploading a file never creates a trusted record. Whitespace is collapsed before comparison; all other extracted text must match. Missing codes, unknown codes, duplicated codes and changed text remain **Not verified**, never **Fake**. Only an exact match is labelled **Demo sample matched**.
+
+Use `server/fixtures/sample-letter-with-code.pdf` and `server/fixtures/sample-letter-without-code.pdf` for the demo. They have identical contents apart from the footer code. Changing an amount while keeping the code fails the check. The card retrieves its result from `GET /api/documents/:id/verification?conversationId=<uuid>`, including after reload; client-supplied verdicts are not trusted. The model receives the same server result with an explicit demo-only limitation.
+
+This verifies a match to our fictional sample, not bank origin. It does not check embedded images, PDF signatures or a bank's issuance records. A genuine bank verification service would require trusted bank records or digital signatures.

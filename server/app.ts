@@ -106,6 +106,35 @@ app.get("/api/conversations", async (_req, res) => {
   res.json(result.rows);
 });
 
+app.get("/api/sources", async (_req, res) => {
+  res.json(backend ? await backend.sourceFiles() : []);
+});
+
+app.get("/api/sources/:id", async (req, res) => {
+  if (!z.uuid().safeParse(req.params.id).success)
+    return res.status(400).json({ error: "Invalid source ID." });
+  const source = await backend?.sourceFile(req.params.id);
+  if (!source)
+    return res.status(404).json({
+      error: "This document is not available in the selected collections.",
+    });
+  const contentType = source.response.headers
+    .get("content-type")
+    ?.split(";")[0];
+  // Keep upstream credentials/headers private and never render uploaded HTML.
+  res.set({
+    "Content-Type":
+      contentType === "application/pdf"
+        ? "application/pdf"
+        : "text/plain; charset=utf-8",
+    "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(source.file.name)}`,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox",
+  });
+  res.send(Buffer.from(await source.response.arrayBuffer()));
+});
+
 app.get("/api/conversations/:id", async (req, res) => {
   if (!z.uuid().safeParse(req.params.id).success)
     return res.status(400).json({ error: "Invalid conversation ID." });

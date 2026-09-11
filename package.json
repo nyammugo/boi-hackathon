@@ -22,7 +22,9 @@
     "test:model": "tsx --test server/model.test.ts",
     "test:backend": "tsx --test server/backend.test.ts",
     "test:api": "tsx --test server/app.test.ts",
-    "test:documents": "tsx --test server/documents.test.ts"
+    "test:documents": "tsx --test server/documents.test.ts",
+    "test:citations": "tsx --tsconfig tsconfig.web.json --test src/MessageContent.test.tsx",
+    "test:charts": "tsx --tsconfig tsconfig.web.json --test src/ChartOutput.test.tsx"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.52",
@@ -38,6 +40,8 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
+    "recharts": "^3.10.1",
+    "remark-gfm": "^4.0.1",
     "zod": "^4.1.13"
   },
   "devDependencies": {

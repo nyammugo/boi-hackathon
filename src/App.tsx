@@ -14,11 +14,13 @@ import {
   Plus,
   Sparkles,
   Square,
+  Volume2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { api } from "./api";
+import { canReadAloud, readAloud } from "./readAloud";
 
 type Conversation = { id: string; title: string; updated_at: string };
 type Health = {
@@ -42,7 +44,13 @@ const suggestions = [
   },
 ];
 
-export function App({ embedded = false }: { embedded?: boolean }) {
+export function App({
+  embedded = false,
+  active = true,
+}: {
+  embedded?: boolean;
+  active?: boolean;
+}) {
   const [conversation, setConversation] = useState<{
     id: string;
     messages: UIMessage[];
@@ -246,6 +254,7 @@ export function App({ embedded = false }: { embedded?: boolean }) {
             initialMessages={conversation.messages}
             onSaved={refresh}
             onBusy={setBusy}
+            active={active}
           />
         )}
       </main>
@@ -258,11 +267,13 @@ function Chat({
   initialMessages,
   onSaved,
   onBusy,
+  active,
 }: {
   id: string;
   initialMessages: UIMessage[];
   onSaved: () => Promise<void>;
   onBusy: (busy: boolean) => void;
+  active: boolean;
 }) {
   const [input, setInput] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -272,6 +283,9 @@ function Chat({
   useEffect(() => () => uploadController.current?.abort(), []);
   const [copiedId, setCopiedId] = useState("");
   const [copyError, setCopyError] = useState("");
+  const [readingId, setReadingId] = useState("");
+  const [readError, setReadError] = useState("");
+  const cancelReading = useRef<(() => void) | null>(null);
   const [showScroll, setShowScroll] = useState(false);
   const scrollArea = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -305,6 +319,11 @@ function Chat({
   const generating = status === "submitted" || status === "streaming";
   const busy = generating || uploading;
 
+  useEffect(() => () => cancelReading.current?.(), []);
+  useEffect(() => {
+    if (!active) cancelReading.current?.();
+  }, [active]);
+
   useEffect(() => {
     onBusy(busy);
   }, [busy, onBusy]);
@@ -327,9 +346,10 @@ function Chat({
 
   function send(text: string, sourceId?: string) {
     if (!text.trim() || busy) return;
+    cancelReading.current?.();
     clearError();
     nearBottom.current = true;
-    setInput("");
+    if (!sourceId) setInput("");
     void sendMessage({
       text: text.trim(),
       ...(sourceId ? { metadata: { simplifyMessageId: sourceId } } : {}),
@@ -405,6 +425,23 @@ function Chat({
     }
   }
 
+  function toggleReading(messageId: string, button: HTMLButtonElement) {
+    const wasReading = readingId === messageId;
+    cancelReading.current?.();
+    setReadError("");
+    if (wasReading) return;
+    const content = button
+      .closest(".message")
+      ?.querySelector<HTMLElement>(".message-content");
+    if (!content || !canReadAloud()) return;
+    setReadingId(messageId);
+    cancelReading.current = readAloud(content, (error) => {
+      setReadingId("");
+      setReadError(error ?? "");
+      cancelReading.current = null;
+    });
+  }
+
   return (
     <>
       <input
@@ -422,7 +459,7 @@ function Chat({
         }}
       />
       <div
-        className="conversation-scroll"
+        className={`conversation-scroll ${messages.length === 0 ? "is-empty" : ""}`}
         ref={scrollArea}
         onScroll={() => {
           const node = scrollArea.current;
@@ -554,6 +591,29 @@ function Chat({
                       </button>
                       <button
                         type="button"
+                        className="read-aloud-button"
+                        disabled={!canReadAloud()}
+                        title={
+                          canReadAloud()
+                            ? undefined
+                            : "Read aloud is not available in this browser."
+                        }
+                        aria-pressed={readingId === message.id}
+                        onClick={(event) =>
+                          toggleReading(message.id, event.currentTarget)
+                        }
+                      >
+                        {readingId === message.id ? (
+                          <Square size={14} />
+                        ) : (
+                          <Volume2 size={15} />
+                        )}
+                        {readingId === message.id
+                          ? "Stop reading"
+                          : "Read aloud"}
+                      </button>
+                      <button
+                        type="button"
                         className="copy-button"
                         aria-label={
                           copiedId === message.id
@@ -589,7 +649,9 @@ function Chat({
           </div>
         )}
       </div>
-      <div className="composer-area">
+      <div
+        className={`composer-area ${messages.length === 0 ? "is-empty" : ""}`}
+      >
         {showScroll && (
           <button
             type="button"
@@ -613,6 +675,7 @@ function Chat({
               type="button"
               disabled={busy}
               onClick={() => {
+                cancelReading.current?.();
                 clearError();
                 void regenerate();
               }}
@@ -650,6 +713,11 @@ function Chat({
         {copyError && (
           <p className="copy-error" role="status">
             {copyError}
+          </p>
+        )}
+        {readError && (
+          <p className="copy-error" role="status">
+            {readError}
           </p>
         )}
         <form

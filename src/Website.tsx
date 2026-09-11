@@ -432,7 +432,7 @@ export function Website() {
               <Minus size={21} />
             </button>
           </header>
-          <App embedded={!expanded} />
+          <App embedded={!expanded} active={open} />
         </section>
       )}
       <button

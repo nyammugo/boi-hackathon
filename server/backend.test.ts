@@ -5,7 +5,9 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import type { UIMessage } from "ai";
 import { BuildpromptBackend } from "./backend";
+import { plainLanguagePrompt, simplificationPrompt, textOf } from "./chat";
 
 const directory = await mkdtemp(join(tmpdir(), "plainly-backend-"));
 const cookies: (string | undefined)[] = [];
@@ -117,8 +119,69 @@ test("forwards chat to the backend, preserving streaming without creating a remo
       (event) => event.type === "text-delta" && event.delta.includes("BOI"),
     ),
   );
-  assert.deepEqual(requests.at(-1), { messages });
+  assert.deepEqual(requests.at(-1), {
+    messages: [
+      {
+        ...messages[0],
+        parts: [
+          ...messages[0].parts,
+          { type: "text", text: plainLanguagePrompt },
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(messages[0].parts, [
+    { type: "text", text: "Summarise the sources." },
+  ]);
   assert.equal(cookies.at(-1), "wos-session=initial");
+});
+
+test("sends the selected older answer and writing guidance when simplifying without changing history", async () => {
+  const { backend } = await client("simplify");
+  const source: UIMessage = {
+    id: "older-answer",
+    role: "assistant",
+    parts: [
+      { type: "text", text: "€100 becomes €105 at 5%." },
+      { type: "text", text: "This assumes no fees or taxes." },
+    ],
+  };
+  const messages: UIMessage[] = [
+    {
+      id: "question",
+      role: "user",
+      parts: [{ type: "text", text: "Explain interest." }],
+    },
+    source,
+    {
+      id: "later-question",
+      role: "user",
+      parts: [{ type: "text", text: "What are trees?" }],
+    },
+    {
+      id: "later-answer",
+      role: "assistant",
+      parts: [{ type: "text", text: "Trees are plants." }],
+    },
+    {
+      id: "simplify",
+      role: "user",
+      metadata: { simplifyMessageId: source.id },
+      parts: [{ type: "text", text: simplificationPrompt(source) }],
+    },
+  ];
+  const original = structuredClone(messages);
+  const stream = await backend.stream(messages, new AbortController().signal);
+  await stream.pipeTo(new WritableStream({ write() {} }));
+  const sent = requests.at(-1) as { messages: UIMessage[] };
+  assert.deepEqual(sent.messages.slice(0, -1), original.slice(0, -1));
+  const request = sent.messages.at(-1);
+  assert.ok(request);
+  const rewrite = textOf(request);
+  assert.ok(rewrite.includes(`<answer>\n${textOf(source)}\n</answer>`));
+  assert.ok(rewrite.includes(plainLanguagePrompt));
+  assert.ok(!rewrite.includes("Trees are plants."));
+  assert.deepEqual(messages, original);
 });
 
 test("reports only default source collections and verifies the Sonnet 5 default", async () => {

@@ -2,6 +2,8 @@
 
 A small React chatbot that makes answers easier to understand. Ask a question, then click **Simplify** under any answer to get a plain-language version. The original stays in the conversation. Chats are saved in local Postgres and can be reopened from the sidebar. Choose **Explain this letter** to open a file picker and get a plain-language explanation of a PDF, Word (.docx), or text (.txt) letter, including important details and any requested actions.
 
+Click **Read aloud** under a completed answer to listen with the browser's voice. The current passage is highlighted; voices that provide [word boundary events](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesisUtterance/boundary_event) highlight each word. Older browsers without text-range highlighting highlight the current paragraph. **Stop reading** ends playback. Choosing another answer, sending a message, opening another conversation, or hiding the chat also stops playback. The control is disabled when browser speech is unavailable. No extra API key is required.
+
 The app connects to **https://staging.boi.buildprompt.app** through a server-only session. No login, signup, or account setup is needed in the web app. BOI staging runs Claude Sonnet 5; conversations are saved in local Postgres.
 
 The interface takes its palette from [Bank of Ireland’s website](https://www.bankofireland.com/): blue `#0000ff`, navy `#000066`, sky `#b2dbff` and mint `#00ffc5`. It uses Open Sans for interface text and Fraunces as an open-source alternative to the site's proprietary serif. Theme variables live in `src/styles.css`; the header identifies this as a hackathon prototype.
@@ -152,6 +154,9 @@ npm run test:chat
 npm run test:documents
 npm run test:model
 npm run test:backend
+
+# Read-aloud text segmentation and browser capability tests.
+npx tsx --test src/readAloud.test.ts
 
 # API integration tests with canned streaming and real Postgres.
 # Requires setup first. Uses temporary UUID conversations and deletes only its own test rows.

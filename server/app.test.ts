@@ -1,0 +1,146 @@
+import "dotenv/config";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { after, before, test } from "node:test";
+import type { UIMessage } from "ai";
+
+// Set before importing the app: integration tests never call the AI provider.
+process.env.DEMO_MODE = "true";
+const { app } = await import("./app");
+const { migrate, pool, loadConversation, saveConversation } = await import(
+  "./db"
+);
+const { textOf } = await import("./chat");
+const ids: string[] = [];
+const server = app.listen(0, "127.0.0.1");
+await once(server, "listening");
+const address = server.address();
+if (!address || typeof address === "string")
+  throw new Error("Missing test server address");
+const base = `http://127.0.0.1:${address.port}`;
+
+function testId() {
+  const id = randomUUID();
+  ids.push(id);
+  return id;
+}
+function question(text = "Explain compound interest."): UIMessage {
+  return { id: randomUUID(), role: "user", parts: [{ type: "text", text }] };
+}
+function post(body: unknown) {
+  return fetch(`${base}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+before(async () => {
+  await migrate();
+});
+after(async () => {
+  await pool.query("DELETE FROM conversations WHERE id = ANY($1::uuid[])", [
+    ids,
+  ]);
+  await pool.end();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+test("health reports real Postgres and demo mode", async () => {
+  const response = await fetch(`${base}/api/health`);
+  assert.equal(response.status, 200);
+  const health = (await response.json()) as { mode: string };
+  assert.equal(health.mode, "demo");
+});
+
+test("streams and persists a chat, then simplifies an older saved answer without replacing it", async () => {
+  const id = testId();
+  const response = await post({ id, messages: [question()] });
+  assert.equal(response.status, 200);
+  assert.ok(
+    response.headers.get("content-type")?.includes("text/event-stream"),
+  );
+  const stream = await response.text();
+  assert.ok(stream.includes("text-delta"));
+  assert.ok(stream.includes("[DONE]"));
+  const messages = await loadConversation(id);
+  assert.equal(messages?.length, 2);
+  assert.ok(messages);
+  const original = structuredClone(messages[1]);
+  assert.ok(textOf(original).includes("€110.25"));
+  const later: UIMessage = {
+    id: randomUUID(),
+    role: "assistant",
+    parts: [
+      { type: "text", text: "This is a later, unrelated answer about trees." },
+    ],
+  };
+  const history = [...messages, question("Tell me about trees."), later];
+  await saveConversation(id, history);
+  const simplify = {
+    ...question("Make this answer easier to understand."),
+    metadata: { simplifyMessageId: original.id },
+  };
+  const simplified = await post({ id, messages: [...history, simplify] });
+  assert.equal(simplified.status, 200);
+  await simplified.text();
+  const saved = await loadConversation(id);
+  assert.equal(saved?.length, 6);
+  assert.deepEqual(saved?.[1], original);
+  assert.deepEqual(saved?.[3], later);
+  assert.ok(saved && textOf(saved[5]).includes("simple version"));
+  const reloaded = await fetch(`${base}/api/conversations/${id}`);
+  const reloadedChat = (await reloaded.json()) as { messages: UIMessage[] };
+  assert.deepEqual(reloadedChat.messages, saved);
+  const list = await fetch(`${base}/api/conversations`);
+  const historyList = (await list.json()) as { id: string }[];
+  assert.ok(historyList.some((chat) => chat.id === id));
+});
+
+test("rejects malformed, blank and unsupported requests without saving", async () => {
+  const id = testId();
+  assert.equal((await post({ id, messages: [question("  ")] })).status, 400);
+  assert.equal(
+    (await post({ id, messages: [{ ...question(), role: "system" }] })).status,
+    400,
+  );
+  assert.equal((await post({ id, messages: [] })).status, 400);
+  assert.equal(await loadConversation(id), undefined);
+  assert.equal(
+    (await fetch(`${base}/api/conversations/not-a-uuid`)).status,
+    400,
+  );
+  assert.equal(
+    (await fetch(`${base}/api/conversations/${randomUUID()}`)).status,
+    404,
+  );
+});
+
+test("cannot simplify an answer from another conversation and releases the chat lock after rejection", async () => {
+  const first = testId();
+  const second = testId();
+  const answer: UIMessage = {
+    id: randomUUID(),
+    role: "assistant",
+    parts: [{ type: "text", text: "Answer from another chat." }],
+  };
+  await saveConversation(first, [question(), answer]);
+  const invalid = {
+    id: second,
+    messages: [{ ...question(), metadata: { simplifyMessageId: answer.id } }],
+  };
+  assert.equal((await post(invalid)).status, 400);
+  assert.equal((await post(invalid)).status, 400);
+  assert.equal(await loadConversation(second), undefined);
+});
+
+test("rejects concurrent writes to the same chat", async () => {
+  const id = testId();
+  const body = { id, messages: [question()] };
+  const first = await post(body);
+  assert.equal(first.status, 200);
+  const second = await post(body);
+  assert.equal(second.status, 409);
+  await first.text();
+  assert.equal((await loadConversation(id))?.length, 2);
+});

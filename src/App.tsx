@@ -350,7 +350,7 @@ function Chat({
   return (
     <>
       <div
-        className="conversation-scroll"
+        className={`conversation-scroll ${messages.length === 0 ? "is-empty" : ""}`}
         ref={scrollArea}
         onScroll={() => {
           const node = scrollArea.current;
@@ -488,7 +488,9 @@ function Chat({
           </div>
         )}
       </div>
-      <div className="composer-area">
+      <div
+        className={`composer-area ${messages.length === 0 ? "is-empty" : ""}`}
+      >
         {showScroll && (
           <button
             type="button"
